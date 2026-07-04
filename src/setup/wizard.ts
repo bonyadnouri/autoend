@@ -3,6 +3,9 @@ import pc from 'picocolors';
 import { appendDotEnv, ensureGitignore, loadDotEnv, saveConfig } from '../config.js';
 import { EFFORT_BUDGETS, type Effort } from '../run/effort.js';
 
+/** How users must invoke us via npx — bare "autoend" is npm-blocked (see README). */
+const PACKAGE = '@bonyadnouri/autoend';
+
 const EFFORT_CHOICES: Array<{ value: Effort; label: string; hint: string }> = [
   { value: 'low', label: 'low', hint: 'quick pass · ~1-2 min' },
   { value: 'mid', label: 'mid', hint: 'everyday runs · ~2-3 min' },
@@ -75,9 +78,9 @@ export async function runSetupWizard(repoRoot: string): Promise<void> {
   const budget = EFFORT_BUDGETS[effort as Effort];
   p.note(
     [
-      `${pc.cyan('npx autoend')}            run with your defaults`,
-      `${pc.cyan('npx autoend <url>')}      run against another target`,
-      `${pc.cyan('npx autoend -e high')}    push harder for one run`,
+      `${pc.cyan(`npx ${PACKAGE}`)}            run with your defaults`,
+      `${pc.cyan(`npx ${PACKAGE} <url>`)}      run against another target`,
+      `${pc.cyan(`npx ${PACKAGE} -e high`)}    push harder for one run`,
       '',
       pc.dim(`Defaults: ${target as string} · effort ${effort as string} (${budget.explorers} explorers, ${budget.seconds}s exploration)`),
       pc.dim(`Commit ${pc.reset(pc.dim('.autoend/flows/'))} — it is your team's shared baseline.`),

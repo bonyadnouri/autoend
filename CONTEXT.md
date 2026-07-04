@@ -21,12 +21,16 @@ The persistent record of every Flow agents have discovered and successfully exec
 _Avoid_: test suite, coverage map, approved flows
 
 **Report**:
-The interactive, video-backed record of a Run, reviewed in a browser: the user clicks through Findings and watches what the agents did. Not a document. A Report is self-contained and portable — it can be viewed anywhere, but resolution actions (Dismiss, Reject, Suppress) only work where the Flow Map lives.
+The interactive, video-backed record of a Run, reviewed in a browser: the user clicks through Findings and watches what the agents did. It records the Flows the Run verified, not only the Findings — an all-clear Report still shows what was checked. Not a document. A Report is self-contained and portable — it can be viewed anywhere, but resolution actions (Dismiss, Reject, Suppress) only work where the Flow Map lives.
 _Avoid_: results, output, summary, markdown report
 
 **Finding**:
 A single item in a Report that asks for the user's attention. Three kinds: a Hard Failure (objective error — 4xx/5xx, crash, console error), a Regression (a Flow in the Flow Map that stopped working), or an Advisory (agent judgment — UX, accessibility, performance).
 _Avoid_: issue, bug (a Finding may not be a bug), error
+
+**Diagnosis**:
+The filing agent's judgment attached to a Finding: root cause, fault domain (app, test, or environment), and confidence. Optional — its depth scales with Effort, and a Finding without one is still valid.
+_Avoid_: analysis, RCA, triage, verdict
 
 **Reject**:
 A user action on a Healed finding declaring the heal wrong: the Flow's steps revert to their pre-heal version and the finding is refiled as a Regression. Performed from within the Report.

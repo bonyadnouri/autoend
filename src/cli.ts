@@ -16,6 +16,8 @@ const USAGE = `Usage:
   autoend [target-url]       start a Run (falls back to your configured target)
   autoend clean              delete all local Run artifacts
 
+  (via npx, use the scoped name: npx @bonyadnouri/autoend <args>)
+
 Options:
   -e, --effort <level>   ${EFFORT_LEVELS.join(' | ')} (default: from config, else mid)
       --no-open          don't open the Report in a browser
@@ -68,7 +70,7 @@ async function main(): Promise<void> {
       await runSetupWizard(repoRoot);
       return;
     }
-    console.error('error: no target configured — run `autoend init` or pass a URL');
+    console.error('error: no target configured — run `npx @bonyadnouri/autoend init` or pass a URL');
     process.exitCode = 2;
     return;
   }
@@ -91,7 +93,7 @@ async function main(): Promise<void> {
   const effort: Effort = effortInput;
 
   if (!process.env.CURSOR_API_KEY) {
-    console.warn(pc.yellow('warning: CURSOR_API_KEY not set — exploration will be skipped (run `autoend init`)'));
+    console.warn(pc.yellow('warning: CURSOR_API_KEY not set — exploration will be skipped (run `npx @bonyadnouri/autoend init`)'));
   }
   if (!(await handsAvailable())) {
     console.warn(pc.yellow('warning: agent-browser not found on PATH — exploration will be skipped'));

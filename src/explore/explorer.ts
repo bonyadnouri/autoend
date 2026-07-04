@@ -59,7 +59,7 @@ const GRACE_MS = 60_000;
 export async function explore(opts: ExploreOptions): Promise<ExplorationResult> {
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey) {
-    console.warn('exploration skipped: CURSOR_API_KEY not set — run `autoend init`');
+    console.warn('exploration skipped: CURSOR_API_KEY not set — run `npx @bonyadnouri/autoend init`');
     return { discovered: 0, findings: [] };
   }
 
