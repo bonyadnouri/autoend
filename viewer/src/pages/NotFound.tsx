@@ -9,10 +9,10 @@ export function NotFound() {
       </span>
       <h1 className="mt-4 text-2xl font-bold text-slate-900">Page not found</h1>
       <p className="mt-1 text-sm text-slate-500">
-        The screen you are looking for is not part of the analyzed map.
+        This page is not part of the Report.
       </p>
       <Link to="/" className="btn-primary mt-6">
-        Back to Dashboard
+        Back to Overview
       </Link>
     </div>
   );

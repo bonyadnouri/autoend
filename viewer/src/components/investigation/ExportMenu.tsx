@@ -9,55 +9,53 @@ import {
   ExternalLink,
   X,
 } from "lucide-react";
-import type { TestInvestigation, TestScenario } from "../../types";
+import type { Finding } from "../../types";
 
 interface Props {
-  test: TestScenario;
-  investigation: TestInvestigation;
+  finding: Finding;
+  runId: string;
+  target: string;
 }
 
-function buildReport(test: TestScenario, investigation: TestInvestigation) {
+function buildReport(finding: Finding, runId: string, target: string) {
   return {
     generatedAt: new Date().toISOString(),
-    test: {
-      id: test.id,
-      name: test.name,
-      status: test.status,
-      journeyId: test.journeyId,
-      expectedResult: test.expectedResult,
-      actualResult: test.actualResult,
+    runId,
+    target,
+    finding: {
+      id: finding.id,
+      kind: finding.kind,
+      title: finding.title,
+      detail: finding.detail,
+      flowId: finding.flowId,
     },
-    analysis: investigation.analysis,
-    expectedVsActual: investigation.comparison,
-    timeline: investigation.timeline,
-    network: investigation.network,
-    logs: investigation.logs,
-    evidence: investigation.evidence,
-    environment: investigation.environment,
-    replay: { durationMs: investigation.replay.durationMs, frames: investigation.replay.frames.length },
+    diagnosis: finding.diagnosis,
+    timeline: finding.timeline,
+    network: finding.network,
+    console: finding.console,
+    screenshots: finding.screenshots,
   };
 }
 
-function buildTextSummary(test: TestScenario, investigation: TestInvestigation): string {
-  const a = investigation.analysis;
+function buildTextSummary(finding: Finding, runId: string, target: string): string {
+  const d = finding.diagnosis;
   const lines = [
-    `Bug report: ${test.id} - ${test.name}`,
-    `Status: ${test.status.toUpperCase()}`,
-    a ? `Root cause: ${a.rootCause}` : "",
-    a ? `Confidence: ${a.confidence}% (${a.faultDomain})` : "",
+    `Finding ${finding.id} — ${finding.title}`,
+    `Run: ${runId}`,
+    `Target: ${target}`,
+    `Kind: ${finding.kind}`,
+    d ? `Root cause: ${d.rootCause}` : "",
+    d ? `Confidence: ${d.confidence}% (${d.faultDomain})` : "",
     "",
-    "Expected vs actual:",
-    ...investigation.comparison.map((c) => `- ${c.aspect}: expected "${c.expected}", actual "${c.actual}"`),
-    "",
-    `Environment: ${investigation.environment.device}, ${investigation.environment.os}, ${investigation.environment.appVersion}`,
+    finding.detail,
   ];
   return lines.filter(Boolean).join("\n");
 }
 
-export function ExportMenu({ test, investigation }: Props) {
+export function ExportMenu({ finding, runId, target }: Props) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [jira, setJira] = useState<{ key: string } | null>(null);
+  const [ticket, setTicket] = useState<{ key: string } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -69,12 +67,12 @@ export function ExportMenu({ test, investigation }: Props) {
   }, []);
 
   function downloadJson() {
-    const report = buildReport(test, investigation);
+    const report = buildReport(finding, runId, target);
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${test.id}-bug-report.json`;
+    a.download = `${finding.id}-finding.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -84,7 +82,7 @@ export function ExportMenu({ test, investigation }: Props) {
 
   async function copyReport() {
     try {
-      await navigator.clipboard.writeText(buildTextSummary(test, investigation));
+      await navigator.clipboard.writeText(buildTextSummary(finding, runId, target));
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch {
@@ -93,9 +91,9 @@ export function ExportMenu({ test, investigation }: Props) {
     setOpen(false);
   }
 
-  function createJira() {
-    const key = `QA-${1400 + Math.floor(Math.random() * 600)}`;
-    setJira({ key });
+  function createTicket() {
+    const key = `AE-${1400 + Math.floor(Math.random() * 600)}`;
+    setTicket({ key });
     setOpen(false);
   }
 
@@ -108,8 +106,18 @@ export function ExportMenu({ test, investigation }: Props) {
 
       {open && (
         <div className="absolute right-0 z-20 mt-2 w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-cardHover">
-          <MenuItem icon={FileJson} title="Download JSON" subtitle="Full bug report as .json" onClick={downloadJson} />
-          <MenuItem icon={Ticket} title="Create Jira ticket" subtitle="Attach evidence package (mock)" onClick={createJira} />
+          <MenuItem
+            icon={FileJson}
+            title="Download JSON"
+            subtitle="Full Finding as .json"
+            onClick={downloadJson}
+          />
+          <MenuItem
+            icon={Ticket}
+            title="Create ticket"
+            subtitle="Attach the Finding (mock)"
+            onClick={createTicket}
+          />
           <MenuItem
             icon={copied ? Check : ClipboardCopy}
             title={copied ? "Copied!" : "Copy summary"}
@@ -119,8 +127,11 @@ export function ExportMenu({ test, investigation }: Props) {
         </div>
       )}
 
-      {jira && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4" onClick={() => setJira(null)}>
+      {ticket && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4"
+          onClick={() => setTicket(null)}
+        >
           <div
             className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-cardHover"
             onClick={(e) => e.stopPropagation()}
@@ -131,37 +142,32 @@ export function ExportMenu({ test, investigation }: Props) {
                   <Check size={18} />
                 </span>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900">Jira ticket created</h3>
+                  <h3 className="text-base font-bold text-slate-900">Ticket created</h3>
                   <p className="text-xs text-slate-500">Mock integration - no external call made</p>
                 </div>
               </div>
-              <button className="text-slate-400 hover:text-slate-600" onClick={() => setJira(null)}>
+              <button className="text-slate-400 hover:text-slate-600" onClick={() => setTicket(null)}>
                 <X size={18} />
               </button>
             </div>
 
             <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-sm font-bold text-brand-700">{jira.key}</span>
-                <span className="pill bg-status-failBg text-status-fail">Bug</span>
-              </div>
-              <p className="mt-2 text-sm font-medium text-slate-800">{test.name}</p>
+              <span className="font-mono text-sm font-bold text-brand-700">{ticket.key}</span>
+              <p className="mt-2 text-sm font-medium text-slate-800">{finding.title}</p>
               <p className="mt-1 text-xs text-slate-500">
-                Evidence package, network, logs and AI analysis attached.
+                Diagnosis, network, console and screenshots attached.
               </p>
               <a
-                href={`https://shopflow.atlassian.net/browse/${jira.key}`}
-                target="_blank"
-                rel="noreferrer"
+                href="#"
                 className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-brand-600 hover:text-brand-700"
                 onClick={(e) => e.preventDefault()}
               >
-                Open in Jira <ExternalLink size={14} />
+                Open ticket <ExternalLink size={14} />
               </a>
             </div>
 
             <div className="mt-5 flex justify-end">
-              <button className="btn-primary" onClick={() => setJira(null)}>
+              <button className="btn-primary" onClick={() => setTicket(null)}>
                 Done
               </button>
             </div>
@@ -184,7 +190,10 @@ function MenuItem({
   onClick: () => void;
 }) {
   return (
-    <button className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-slate-50" onClick={onClick}>
+    <button
+      className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-slate-50"
+      onClick={onClick}
+    >
       <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-600">
         <Icon size={16} />
       </span>

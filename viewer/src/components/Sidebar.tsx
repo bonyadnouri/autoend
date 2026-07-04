@@ -1,7 +1,7 @@
-import { LayoutDashboard, Route, Sparkles } from "lucide-react";
+import { LayoutDashboard, Route, ListChecks, Sparkles } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
-import { appSummary } from "../data/mockData";
+import { useReport } from "../data/report";
 
 interface NavItem {
   to: string;
@@ -11,11 +11,14 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/journeys", label: "User Journeys", icon: Route },
+  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
+  { to: "/flows", label: "Flows", icon: Route },
+  { to: "/findings", label: "Findings", icon: ListChecks },
 ];
 
 export function Sidebar() {
+  const { artifact } = useReport();
+
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
       <div className="flex items-center gap-2.5 px-5 py-5">
@@ -23,8 +26,8 @@ export function Sidebar() {
           <Sparkles size={18} />
         </span>
         <div className="leading-tight">
-          <div className="text-base font-bold tracking-tight text-slate-900">Lumen</div>
-          <div className="text-xs text-slate-500">AI App Analysis</div>
+          <div className="text-base font-bold tracking-tight text-slate-900">autoend</div>
+          <div className="text-xs text-slate-500">Run Report</div>
         </div>
       </div>
 
@@ -49,12 +52,8 @@ export function Sidebar() {
       </nav>
 
       <div className="m-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-        <div className="text-xs font-semibold text-slate-500">Analyzed app</div>
-        <div className="mt-1 flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-status-pass" />
-          <span className="text-sm font-semibold text-slate-800">{appSummary.appName}</span>
-        </div>
-        <div className="mt-0.5 truncate text-xs text-slate-400">{appSummary.appUrl}</div>
+        <div className="text-xs font-semibold text-slate-500">Run</div>
+        <div className="mt-1 truncate font-mono text-xs text-slate-700">{artifact.runId}</div>
       </div>
     </aside>
   );

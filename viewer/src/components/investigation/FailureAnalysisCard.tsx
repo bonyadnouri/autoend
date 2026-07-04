@@ -1,27 +1,28 @@
-import { Sparkles, Crosshair, ListTree, Cpu } from "lucide-react";
-import type { FailureAnalysis } from "../../types";
-import { faultDomainLabel } from "../../data/helpers";
+import { Stethoscope, Crosshair, Cpu } from "lucide-react";
+import type { Diagnosis, FaultDomain } from "../../types";
 import { ConfidenceMeter } from "./ConfidenceMeter";
 
-const domainTone: Record<string, string> = {
-  frontend: "bg-violet-100 text-violet-700",
-  backend: "bg-sky-100 text-sky-700",
-  network: "bg-amber-100 text-amber-700",
-  data: "bg-teal-100 text-teal-700",
-  unknown: "bg-slate-100 text-slate-600",
+const domainLabel: Record<FaultDomain, string> = {
+  app: "App",
+  flow: "Flow",
+  environment: "Environment",
 };
 
-export function FailureAnalysisCard({ analysis }: { analysis: FailureAnalysis }) {
+const domainTone: Record<FaultDomain, string> = {
+  app: "bg-sky-100 text-sky-700",
+  flow: "bg-violet-100 text-violet-700",
+  environment: "bg-amber-100 text-amber-700",
+};
+
+export function FailureAnalysisCard({ diagnosis }: { diagnosis: Diagnosis }) {
   return (
     <section className="card overflow-hidden border-l-4 border-l-status-ai">
       <div className="flex items-center gap-2 border-b border-slate-100 bg-status-aiBg/40 px-5 py-3">
-        <Sparkles size={17} className="text-status-ai" />
-        <h2 className="text-sm font-semibold text-status-ai">AI failure analysis</h2>
-        <span
-          className={`pill ml-auto ${domainTone[analysis.faultDomain] ?? domainTone.unknown}`}
-        >
+        <Stethoscope size={17} className="text-status-ai" />
+        <h2 className="text-sm font-semibold text-status-ai">Diagnosis</h2>
+        <span className={`pill ml-auto ${domainTone[diagnosis.faultDomain]}`}>
           <Cpu size={13} />
-          {faultDomainLabel[analysis.faultDomain]} fault
+          {domainLabel[diagnosis.faultDomain]} fault
         </span>
       </div>
 
@@ -31,31 +32,15 @@ export function FailureAnalysisCard({ analysis }: { analysis: FailureAnalysis })
             <Crosshair size={16} className="mt-0.5 shrink-0 text-status-fail" />
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Likely root cause
+                Root cause
               </div>
-              <p className="mt-0.5 text-sm font-semibold text-slate-900">{analysis.rootCause}</p>
+              <p className="mt-0.5 text-sm font-semibold text-slate-900">{diagnosis.rootCause}</p>
             </div>
           </div>
-          <p className="mt-3 text-sm leading-relaxed text-slate-600">{analysis.explanation}</p>
         </div>
 
         <div className="rounded-lg bg-slate-50 p-4">
-          <ConfidenceMeter value={analysis.confidence} />
-          <div className="mt-4">
-            <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-              <ListTree size={13} /> Suggested next steps
-            </div>
-            <ol className="mt-2 space-y-1.5">
-              {analysis.nextSteps.map((s, i) => (
-                <li key={i} className="flex gap-2 text-sm text-slate-700">
-                  <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-status-ai text-[10px] font-bold text-white">
-                    {i + 1}
-                  </span>
-                  {s}
-                </li>
-              ))}
-            </ol>
-          </div>
+          <ConfidenceMeter value={diagnosis.confidence} />
         </div>
       </div>
     </section>

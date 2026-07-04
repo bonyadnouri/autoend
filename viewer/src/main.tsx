@@ -3,29 +3,50 @@ import ReactDOM from "react-dom/client";
 import { RouterProvider, createHashRouter } from "react-router-dom";
 import "./index.css";
 import { Layout } from "./components/Layout";
-import { Dashboard } from "./pages/Dashboard";
-import { Journeys } from "./pages/Journeys";
-import { JourneyDetails } from "./pages/JourneyDetails";
-import { TestDetails } from "./pages/TestDetails";
-import { IssueDetails } from "./pages/IssueDetails";
+import { Overview } from "./pages/Overview";
+import { Flows } from "./pages/Flows";
+import { FlowDetails } from "./pages/FlowDetails";
+import { Findings } from "./pages/Findings";
+import { FindingDetails } from "./pages/FindingDetails";
 import { NotFound } from "./pages/NotFound";
+import { loadReport, ReportProvider } from "./data/report";
 
 const router = createHashRouter([
   {
     element: <Layout />,
     children: [
-      { path: "/", element: <Dashboard /> },
-      { path: "/journeys", element: <Journeys /> },
-      { path: "/journeys/:id", element: <JourneyDetails /> },
-      { path: "/tests/:id", element: <TestDetails /> },
-      { path: "/issues/:id", element: <IssueDetails /> },
+      { path: "/", element: <Overview /> },
+      { path: "/flows", element: <Flows /> },
+      { path: "/flows/:id", element: <FlowDetails /> },
+      { path: "/findings", element: <Findings /> },
+      { path: "/findings/:id", element: <FindingDetails /> },
       { path: "*", element: <NotFound /> },
     ],
   },
 ]);
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <RouterProvider router={router} />
-  </React.StrictMode>,
+const root = ReactDOM.createRoot(document.getElementById("root")!);
+
+loadReport().then(
+  (data) => {
+    root.render(
+      <React.StrictMode>
+        <ReportProvider data={data}>
+          <RouterProvider router={router} />
+        </ReportProvider>
+      </React.StrictMode>,
+    );
+  },
+  (err) => {
+    root.render(
+      <div className="grid min-h-screen place-items-center p-8 text-center">
+        <div>
+          <h1 className="text-lg font-semibold text-slate-900">Could not load this Report</h1>
+          <p className="mt-2 max-w-md text-sm text-slate-500">
+            {err instanceof Error ? err.message : String(err)}
+          </p>
+        </div>
+      </div>,
+    );
+  },
 );

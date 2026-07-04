@@ -1,25 +1,14 @@
-import {
-  Smartphone,
-  Cpu,
-  Package,
-  RotateCw,
-  Palette,
-  Wifi,
-  Clock,
-  MonitorSmartphone,
-} from "lucide-react";
+import { Globe, MonitorSmartphone, Cpu, Package, Boxes } from "lucide-react";
 import type { Environment } from "../../types";
-import { formatDateTime } from "../../data/helpers";
 
+/** Retyped to the real Environment schema; Task 5 wires it into FindingDetails. */
 export function EnvironmentDetails({ env }: { env: Environment }) {
   const rows = [
-    { icon: Smartphone, label: "Device", value: env.device },
-    { icon: Cpu, label: "OS version", value: env.os },
-    { icon: Package, label: "App version", value: env.appVersion },
-    { icon: RotateCw, label: "Orientation", value: env.orientation },
-    { icon: Palette, label: "Theme", value: env.theme },
-    { icon: Wifi, label: "Network", value: env.network },
-    { icon: Clock, label: "Timestamp", value: formatDateTime(env.timestamp) },
+    { icon: Globe, label: "Browser", value: env.browser },
+    { icon: MonitorSmartphone, label: "Viewport", value: env.viewport },
+    { icon: Cpu, label: "OS", value: env.os },
+    { icon: Package, label: "Node", value: env.node },
+    { icon: Boxes, label: "autoend", value: env.autoendVersion },
   ];
 
   return (

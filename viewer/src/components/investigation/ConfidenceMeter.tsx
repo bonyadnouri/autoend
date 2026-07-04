@@ -23,7 +23,7 @@ export function ConfidenceMeter({ value, size = "md" }: Props) {
   return (
     <div>
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-500">AI confidence</span>
+        <span className="text-xs font-medium text-slate-500">Confidence</span>
         <span className={`text-sm font-bold ${tone}`}>{value}%</span>
       </div>
       <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-200">

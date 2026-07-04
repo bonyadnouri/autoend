@@ -1,67 +1,47 @@
-import {
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  MinusCircle,
-  ShieldAlert,
-  Sparkles,
-  CircleDot,
-} from "lucide-react";
-import type { JourneyStatus, TestStatus } from "../types";
-import { journeyStatusLabel, testStatusLabel } from "../data/helpers";
+import { CheckCircle2, XCircle, Sparkles, TrendingDown, Lightbulb } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import type { FindingKind, FlowSnapshot } from "../types";
+import { KIND_LABEL, KIND_TONE } from "../data/helpers";
 
 const base = "pill";
 
-export function TestStatusBadge({ status }: { status: TestStatus }) {
-  const map: Record<TestStatus, string> = {
-    pass: "bg-status-passBg text-status-pass",
-    fail: "bg-status-failBg text-status-fail",
-    "not-executed": "bg-status-idleBg text-status-idle",
-  };
-  const Icon = status === "pass" ? CheckCircle2 : status === "fail" ? XCircle : MinusCircle;
-  return (
-    <span className={`${base} ${map[status]}`}>
-      <Icon size={13} />
-      {testStatusLabel[status]}
-    </span>
-  );
-}
+const toneClass: Record<"pass" | "warn" | "fail" | "ai", string> = {
+  pass: "bg-status-passBg text-status-pass",
+  warn: "bg-status-warnBg text-status-warn",
+  fail: "bg-status-failBg text-status-fail",
+  ai: "bg-status-aiBg text-status-ai",
+};
 
-export function JourneyStatusBadge({ status }: { status: JourneyStatus }) {
-  const map: Record<JourneyStatus, string> = {
-    healthy: "bg-status-passBg text-status-pass",
-    warning: "bg-status-warnBg text-status-warn",
-    broken: "bg-status-failBg text-status-fail",
-  };
-  const Icon =
-    status === "healthy" ? CheckCircle2 : status === "warning" ? AlertTriangle : XCircle;
-  return (
-    <span className={`${base} ${map[status]}`}>
-      <Icon size={13} />
-      {journeyStatusLabel[status]}
-    </span>
-  );
-}
+type FlowStatus = FlowSnapshot["status"];
 
-export function AiBadge({ label = "AI recommendation" }: { label?: string }) {
+const flowMeta: Record<FlowStatus, { tone: keyof typeof toneClass; icon: LucideIcon; label: string }> = {
+  passed: { tone: "pass", icon: CheckCircle2, label: "Passed" },
+  failed: { tone: "fail", icon: XCircle, label: "Failed" },
+  discovered: { tone: "ai", icon: Sparkles, label: "Discovered" },
+};
+
+export function FlowStatusBadge({ status }: { status: FlowStatus }) {
+  const { tone, icon: Icon, label } = flowMeta[status];
   return (
-    <span className={`${base} bg-status-aiBg text-status-ai`}>
-      <Sparkles size={13} />
+    <span className={`${base} ${toneClass[tone]}`}>
+      <Icon size={13} />
       {label}
     </span>
   );
 }
 
-export function DotStatus({ status }: { status: JourneyStatus }) {
-  const color =
-    status === "healthy"
-      ? "text-status-pass"
-      : status === "warning"
-        ? "text-status-warn"
-        : "text-status-fail";
-  return <CircleDot size={14} className={color} />;
-}
+const kindIcon: Record<FindingKind, LucideIcon> = {
+  "hard-failure": XCircle,
+  regression: TrendingDown,
+  advisory: Lightbulb,
+};
 
-export function SeverityIcon() {
-  return <ShieldAlert size={13} />;
+export function KindBadge({ kind }: { kind: FindingKind }) {
+  const Icon = kindIcon[kind];
+  return (
+    <span className={`${base} ${toneClass[KIND_TONE[kind]]}`}>
+      <Icon size={13} />
+      {KIND_LABEL[kind]}
+    </span>
+  );
 }
