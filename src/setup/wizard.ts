@@ -1,17 +1,17 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { appendDotEnv, ensureGitignore, loadDotEnv, saveConfig } from '../config.js';
-import { EFFORT_BUDGETS, type Effort } from '../run/effort.js';
+import { EFFORT_PIPELINES, type Effort } from '../run/effort.js';
 
 /** How users must invoke us via npx — bare "autoend" is npm-blocked (see README). */
 const PACKAGE = '@bonyadnouri/autoend';
 
 const EFFORT_CHOICES: Array<{ value: Effort; label: string; hint: string }> = [
-  { value: 'low', label: 'low', hint: 'quick pass · ~1-2 min' },
-  { value: 'mid', label: 'mid', hint: 'everyday runs · ~2-3 min' },
-  { value: 'high', label: 'high', hint: 'thorough sweep · ~5 min' },
-  { value: 'xhigh', label: 'xhigh', hint: 'deep exploration · ~12 min' },
-  { value: 'ultra', label: 'ultra', hint: 'leave it running · ~35 min' },
+  { value: 'low', label: 'low', hint: 'quick smoke pass · ~1-2 min' },
+  { value: 'mid', label: 'mid', hint: 'everyday smoke runs · ~2-3 min' },
+  { value: 'high', label: 'high', hint: 'deep: recon + personas + verify + triage · ~15 min' },
+  { value: 'xhigh', label: 'xhigh', hint: 'deep, two lead-seeded waves · ~25 min' },
+  { value: 'ultra', label: 'ultra', hint: 'full-depth bug hunt · ~45-60 min' },
 ];
 
 /** `autoend init` — the guided setup. Writes .autoend/config.json and .env. */
@@ -75,7 +75,7 @@ export async function runSetupWizard(repoRoot: string): Promise<void> {
       : 'Config written',
   );
 
-  const budget = EFFORT_BUDGETS[effort as Effort];
+  const budget = EFFORT_PIPELINES[effort as Effort];
   p.note(
     [
       `${pc.cyan(`npx ${PACKAGE}`)}            run with your defaults`,

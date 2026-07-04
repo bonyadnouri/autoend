@@ -34,7 +34,9 @@
     "dev:viewer": "vite --config viewer/vite.config.ts",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench:mini": "tsx bench/run-mini.ts",
+    "bench:grafana": "tsx bench/grafana/run-grafana.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",

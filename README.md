@@ -96,24 +96,25 @@ A browser tab opens with the verdict up top and findings below, sorted by how mu
 | Tier | Meaning | Your move |
 |---|---|---|
 | **Hard failure** | Objectively broken — 5xx, crashes, console errors | Fix it |
+| **Defect** | Semantic bug (wrong data, lost state, dead control) that an independent Verifier **reproduced on video** — deep efforts only | Fix it |
 | **Regression** | Worked in a previous run, failed now | Fix it — or remove the flow if the change was intentional |
 | **Heal** | UI changed, goal still works; script was rewritten | Watch the video, confirm *(coming — see Status)* |
 | **Advisory** | Agent judgment: UX, accessibility, speed | Your call |
 
-Every finding carries a video. Watch it before you read another line of logs.
+Every finding carries a video. Watch it before you read another line of logs. At deep efforts (`high`+), findings also carry a **Disposition**: a Triage agent researches your git history and GitHub issues and annotates each finding as `bug`, `intended-change`, or `known-issue` — always with the commit/PR/issue receipts, never deciding for you. Dismissing stays your click; it just comes with the evidence already on screen.
 
 ![autoend report showing the all clear state](docs/assets/viewer-all-clear.png)
 
 ### 4. Choose your effort
 
-Effort scales **exploration only** — replay of the full map always completes, at any level, so regression coverage is never sacrificed to a small budget.
+Effort scales **exploration only** — replay of the full map always completes, at any level, so regression coverage is never sacrificed to a small budget. From `high` upward, Effort changes the exploration pipeline's *shape*, not just its duration (ADR-0007): a Recon agent reads your repo and briefs a fleet of persona explorers (naive newcomer → domain power user → adversarial prober …), suspected semantic bugs are only filed after an independent Verifier reproduces them on video, and a Triage agent checks git history and GitHub issues to annotate whether a change looks intentional.
 
 ```sh
-npx @bonyadnouri/autoend -e low     # quick pass          ~1-2 min
-npx @bonyadnouri/autoend -e mid     # everyday runs       ~2-3 min
-npx @bonyadnouri/autoend -e high    # thorough sweep      ~5 min
-npx @bonyadnouri/autoend -e xhigh   # deep exploration    ~12 min
-npx @bonyadnouri/autoend -e ultra   # leave it running    ~35 min
+npx @bonyadnouri/autoend -e low     # quick smoke pass         ~1-2 min
+npx @bonyadnouri/autoend -e mid     # everyday smoke runs      ~2-3 min
+npx @bonyadnouri/autoend -e high    # deep: recon + personas + verify + triage   ~15 min
+npx @bonyadnouri/autoend -e xhigh   # deep, two lead-seeded waves                ~25 min
+npx @bonyadnouri/autoend -e ultra   # full-depth bug hunt                        ~45-60 min
 ```
 
 ### CLI reference
@@ -124,10 +125,13 @@ autoend [target-url]       start a Run (falls back to your configured target)
 autoend clean              delete all local Run artifacts
 
   -e, --effort <level>     low | mid | high | xhigh | ultra
+      --model <id>         Cursor model id for all agents (default: strongest available)
       --no-open            don't open the Report in a browser
       --no-serve           write the Run artifact and exit (CI-style)
       --port <n>           viewer port (default: random)
 ```
+
+Model precedence: `--model` → `AUTOEND_MODEL` env var → `"model"` in `.autoend/config.json` → the strongest model your Cursor account can route (every agent role runs the same strong model by design — ADR-0009). The resolved model is printed at Run start and recorded in the report.
 
 ### Guardrails
 
@@ -145,8 +149,12 @@ Discovered and replayed Flow scripts are LLM-authored and executed in the Run's 
 │   └── choose-pro-plan/
 │       ├── flow.json      # metadata: title, discovered, last passed
 │       └── flow.mts       # an ordinary Playwright script
+├── brief.json             # Product Brief — Recon's understanding of your app; commit it
+├── leads.json             # Lead ledger — unchased suspicions that seed the next Run; commit it
 └── runs/                  # gitignored — reports + evidence videos
 ```
+
+The Brief and the Lead ledger appear after your first deep Run (`-e high`+). Like the Flow Map, they version with your code: a branch carries its own product understanding, and the fleet gets smarter about your app Run over Run. The Brief regenerates automatically when it goes stale (the codebase moved substantially, or it aged out).
 
 A discovered flow is exactly this readable:
 
@@ -169,7 +177,9 @@ Early and honest about it. The architecture is settled, documented, and verified
 - [x] Run pipeline: replay → explore → report artifact
 - [x] Replay engine — parallel headless Playwright with per-flow video
 - [x] Explorer fleet — Cursor agents driving [agent-browser](https://github.com/vercel-labs/agent-browser) in isolated sessions, verify-before-map-entry
-- [x] Report viewer — verdict, tiers, embedded evidence
+- [x] Deep pipeline (`high`+): Recon → persona Waves → Verifier → Triage ([ADR-0007](./docs/adr/0007-staged-exploration-pipeline.md)/[0008](./docs/adr/0008-findings-earn-trust-by-reproduction-and-receipts.md))
+- [x] Benchmark harness — seeded mini-app inner loop + Grafana real-history scaffolding ([ADR-0009](./docs/adr/0009-real-history-benchmark-validates-the-fleet.md)); first baseline numbers still to be produced
+- [x] Report viewer — verdict, tiers, embedded evidence. **Known gap:** the viewer does not render the new `defect` tier or Dispositions yet — deep-effort reports are written correctly but should be read from `report.json` until the viewer catches up
 - [x] Guided setup (`autoend init`)
 - [ ] Heal-and-notify on replay failures
 - [ ] Report resolution actions (dismiss / reject / suppress)
@@ -184,8 +194,24 @@ Every load-bearing decision is written down — start with [`CONTEXT.md`](./CONT
 2. [agent-browser hands + Playwright artifacts](./docs/adr/0002-agent-browser-hands-playwright-artifact.md) — why exploration and replay use different engines
 3. [Cursor SDK as the agent harness](./docs/adr/0003-cursor-sdk-as-agent-harness.md)
 4. [Report as a static artifact + thin viewer](./docs/adr/0004-report-as-static-artifact.md)
+5. [Lumen-derived React viewer](./docs/adr/0005-lumen-derived-react-viewer.md)
+6. [Diagnosis at finding time](./docs/adr/0006-diagnosis-at-finding-time.md)
+7. [Deep exploration is a staged pipeline of capability-separated roles](./docs/adr/0007-staged-exploration-pipeline.md) — Recon, Personas, Waves, Leads
+8. [Findings earn trust by reproduction and receipts](./docs/adr/0008-findings-earn-trust-by-reproduction-and-receipts.md) — Defects and Dispositions
+9. [A real-history benchmark validates the fleet](./docs/adr/0009-real-history-benchmark-validates-the-fleet.md)
 
 The short version: exploration is LLM-latency-bound, so agents drive the browser through the most token-efficient hands measured anywhere (agent-browser, ~200–400 tokens per snapshot). Replay is reliability-bound, so flows persist as plain Playwright with auto-waiting and native video. The report is static files served by a dumb local viewer — portable to CI by construction.
+
+## Benchmark: proving the fleet finds real bugs
+
+"The fleet can find real bugs in well-known projects" is a falsifiable claim, so the repo ships its test ([ADR-0009](./docs/adr/0009-real-history-benchmark-validates-the-fleet.md)):
+
+```sh
+npm run bench:mini -- --mode discovery   # seeded mini-app: does the fleet rediscover 5 known bugs?
+npm run bench:mini -- --mode upgrade     # does Triage recognize a deliberate UI change from git history?
+```
+
+The mini-app is the fast inner loop — deterministic, seeded bugs, minutes per run. The headline metric comes from real project history: run the fleet against Grafana pinned at a version whose bugs were fixed one release later, and count rediscoveries. See [`bench/README.md`](./bench/README.md) and [`bench/grafana/README.md`](./bench/grafana/README.md) for the curation playbook. **Both spawn real agent fleets and cost real Cursor tokens** — they measure and never gate, and pass bars get set from baseline data, not invented.
 
 ## Development
 

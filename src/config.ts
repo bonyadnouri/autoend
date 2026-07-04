@@ -6,6 +6,8 @@ import type { Effort } from './run/effort.js';
 export interface AutoendConfig {
   target: string;
   effort: Effort;
+  /** Cursor model id for all agent roles; absent = strongest available (ADR-0009). */
+  model?: string;
 }
 
 export function configPath(repoRoot: string): string {

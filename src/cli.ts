@@ -20,6 +20,7 @@ const USAGE = `Usage:
 
 Options:
   -e, --effort <level>   ${EFFORT_LEVELS.join(' | ')} (default: from config, else mid)
+      --model <id>       Cursor model id for all agents (default: strongest available)
       --no-open          don't open the Report in a browser
       --no-serve         write the Run artifact and exit (CI-style)
       --port <n>         viewer port (default: random)
@@ -31,6 +32,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       effort: { type: 'string', short: 'e' },
+      model: { type: 'string' },
       'no-open': { type: 'boolean', default: false },
       'no-serve': { type: 'boolean', default: false },
       port: { type: 'string', default: '0' },
@@ -99,17 +101,20 @@ async function main(): Promise<void> {
     console.warn(pc.yellow('warning: agent-browser not found on PATH — exploration will be skipped'));
   }
 
+  const model = values.model ?? process.env.AUTOEND_MODEL ?? config?.model;
+
   console.log(`${pc.cyan('Run starting')} ${target.href} ${pc.dim(`· effort ${effort}`)}`);
   const startedMs = Date.now();
-  const { artifactDir, artifact } = await executeRun({ target, effort, repoRoot });
+  const { artifactDir, artifact } = await executeRun({ target, effort, repoRoot, model });
   const seconds = ((Date.now() - startedMs) / 1000).toFixed(1);
 
   const failures = artifact.findings.filter((f) => f.kind === 'hard-failure').length;
+  const defects = artifact.findings.filter((f) => f.kind === 'defect').length;
   const regressions = artifact.findings.filter((f) => f.kind === 'regression').length;
   const advisories = artifact.findings.filter((f) => f.kind === 'advisory').length;
   const verdict =
-    failures + regressions > 0
-      ? pc.red(`${failures} hard failures, ${regressions} regressions`)
+    failures + defects + regressions > 0
+      ? pc.red(`${failures} hard failures, ${defects} defects, ${regressions} regressions`)
       : pc.green('all clear');
   console.log(
     `${pc.cyan(`Run finished in ${seconds}s`)} · ${artifact.flowsReplayed} replayed · ${artifact.flowsDiscovered} discovered · ${verdict}` +

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { addFlow, listFlows } from '../src/map/flow-map.js';
 import { prepareRunDir, readRunArtifact, writeReport } from '../src/report/artifact.js';
-import { EFFORT_BUDGETS, EFFORT_LEVELS, isEffort } from '../src/run/effort.js';
+import { EFFORT_LEVELS, EFFORT_PIPELINES, isEffort } from '../src/run/effort.js';
 import type { RunArtifact } from '../src/report/types.js';
 
 let tempDirs: string[] = [];
@@ -24,11 +24,25 @@ describe('effort', () => {
   it('has five levels with monotonically increasing budgets', () => {
     expect(EFFORT_LEVELS).toHaveLength(5);
     for (let i = 1; i < EFFORT_LEVELS.length; i++) {
-      const prev = EFFORT_BUDGETS[EFFORT_LEVELS[i - 1]];
-      const next = EFFORT_BUDGETS[EFFORT_LEVELS[i]];
+      const prev = EFFORT_PIPELINES[EFFORT_LEVELS[i - 1]];
+      const next = EFFORT_PIPELINES[EFFORT_LEVELS[i]];
       expect(next.seconds).toBeGreaterThan(prev.seconds);
       expect(next.explorers).toBeGreaterThanOrEqual(prev.explorers);
     }
+  });
+
+  it('keeps low/mid on the smoke path and unlocks deep stages from high (ADR-0007)', () => {
+    expect(EFFORT_PIPELINES.low.kind).toBe('smoke');
+    expect(EFFORT_PIPELINES.mid.kind).toBe('smoke');
+    for (const effort of ['high', 'xhigh', 'ultra'] as const) {
+      const shape = EFFORT_PIPELINES[effort];
+      expect(shape.kind).toBe('deep');
+      expect(shape.recon && shape.verifier && shape.triage).toBe(true);
+    }
+    // Wave two is lead-seeded and exists only at xhigh/ultra (CONTEXT.md: Wave).
+    expect(EFFORT_PIPELINES.high.waves).toBe(1);
+    expect(EFFORT_PIPELINES.xhigh.waves).toBe(2);
+    expect(EFFORT_PIPELINES.ultra.waves).toBe(2);
   });
 
   it('validates effort strings', () => {

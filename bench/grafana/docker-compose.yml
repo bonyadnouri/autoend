@@ -1,0 +1,31 @@
+# Grafana OSS benchmark Target (ADR-0009: real-history benchmark).
+#
+# The image tag below is a PLACEHOLDER pinned to a concrete, real release so
+# this file parses and pulls today. Curation re-pins it to the exact version X
+# whose ground-truth bugs were fixed in X+1 (discovery mode) or to N / N+1
+# (upgrade-triage mode). See README.md.
+#
+# Runs are disposable: /var/lib/grafana is an anonymous volume, so a fresh
+# `docker compose up` (or `docker compose down -v`) starts from a clean slate
+# and the Target never accumulates state across Runs.
+services:
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    ports:
+      - '3000:3000'
+    environment:
+      # Test Account (CONTEXT.md): agents log in through Grafana's own form.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+    volumes:
+      # Anonymous volume — nothing is persisted to the host; disposable per Run.
+      - /var/lib/grafana
+    healthcheck:
+      # busybox wget ships in the Grafana image; -O /dev/null keeps it quiet.
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://localhost:3000/api/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

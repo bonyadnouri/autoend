@@ -25,11 +25,11 @@ The interactive, video-backed record of a Run, reviewed in a browser: the user c
 _Avoid_: results, output, summary, markdown report
 
 **Finding**:
-A single item in a Report that asks for the user's attention. Three kinds: a Hard Failure (objective error — 4xx/5xx, crash, console error), a Regression (a Flow in the Flow Map that stopped working), or an Advisory (agent judgment — UX, accessibility, performance).
+A single item in a Report that asks for the user's attention. Four kinds: a Hard Failure (objective error — 4xx/5xx, crash, console error), a Defect (a reproduced semantic bug — see Defect), a Regression (a Flow in the Flow Map that stopped working), or an Advisory (agent judgment — UX, accessibility, performance).
 _Avoid_: issue, bug (a Finding may not be a bug), error
 
 **Diagnosis**:
-The filing agent's judgment attached to a Finding: root cause, fault domain (app, flow, or environment), and confidence. Optional — its depth scales with Effort, and a Finding without one is still valid.
+The filing agent's judgment attached to a Finding: root cause, fault domain (app, flow, or environment), and confidence; at deep Efforts the Triage agent extends it with a Disposition. Optional — its depth scales with Effort, and a Finding without one is still valid.
 _Avoid_: analysis, RCA, triage, verdict
 
 **Reject**:
@@ -41,7 +41,7 @@ A user action on an Advisory finding: future Runs stop re-reporting that same ad
 _Avoid_: dismiss (reserved for Regressions), ignore, mute
 
 **Effort**:
-The user-chosen depth preset for a Run (low → ultra, à la Claude's effort levels). Effort bounds exploration only — replaying the whole Flow Map always completes at any Effort, so Regression claims are never sacrificed to a small budget.
+The user-chosen depth preset for a Run (low → ultra, à la Claude's effort levels). Effort bounds exploration only — replaying the whole Flow Map always completes at any Effort, so Regression claims are never sacrificed to a small budget. From high upward, Effort also selects the exploration pipeline's shape (Recon, Personas, Waves, Verifier, Triage — ADR-0007), not just its duration; low and mid keep the fast single-pass smoke run.
 _Avoid_: budget, depth, mode
 
 **Heal**:
@@ -63,3 +63,31 @@ _Avoid_: environment, SUT, app under test
 **Evidence**:
 The video recording of an agent executing a Flow, attached to a Finding so the user can watch exactly what happened.
 _Avoid_: screenshot, log, trace
+
+**Product Brief**:
+The Recon agent's persistent understanding of the Target, built by reading its repo and product docs (Recon never drives a browser): what the product is, who its users are, and which behaviors are worth probing. It instantiates every Persona's Missions, lives in `.autoend/` beside the Flow Map, and regenerates only when stale.
+_Avoid_: recon report, context doc, analysis
+
+**Persona**:
+One explorer's identity in a deep Run: a fixed archetype (naive newcomer, task-driven professional, domain power user, adversarial prober, accessibility-minded user) instantiated with product-specific Missions from the Product Brief. A Persona holds a browser and its Mission brief — never the repo, the filesystem, or the web beyond the Target's origin.
+_Avoid_: lens, role, agent type
+
+**Mission**:
+A non-overlapping assignment Recon gives one Persona: a goal on a specific surface of the Target, plus hypotheses worth testing there. Missions are how the fleet divides the app instead of re-treading the landing page.
+_Avoid_: task, lens, quota
+
+**Lead**:
+A suspicious-but-unconfirmed observation, or territory an explorer noticed but could not chase. Leads are first-class explorer output: the best seed the next Wave, and unconsumed ones persist in a ledger that seeds the next Run — a scent outlives its finder.
+_Avoid_: hint, note, finding (a Lead asks for more exploration, not the user's attention)
+
+**Wave**:
+One spawning generation within a Run's exploration. Wave one runs the Recon-assigned Missions; at xhigh and ultra a second wave chases the best Leads.
+_Avoid_: round, batch, phase (a Run's phases are replay and explore)
+
+**Defect**:
+A Finding kind for a reproduced semantic bug: the app runs without objective errors yet behaves wrongly (wrong data, lost state, broken interaction). A candidate becomes a Defect only after an independent Verifier agent re-executes the filer's repro steps in a fresh browser session and observes the violation; the Verifier's video is the Evidence, and the Finding cites the violated expectation and its source.
+_Avoid_: bug (a candidate is not a Defect until it reproduces), semantic finding
+
+**Disposition**:
+The Triage agent's history-informed verdict inside a Diagnosis: bug, intended-change, known-issue, or unclear — always with citations (commit, PR, or issue). A Disposition annotates; it never dismisses — Dismiss stays human, now made with receipts on screen.
+_Avoid_: verdict, auto-triage, resolution

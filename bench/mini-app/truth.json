@@ -1,0 +1,37 @@
+[
+  {
+    "id": "sort-lexicographic",
+    "bug": "sort-lexicographic",
+    "expectKind": ["defect", "advisory"],
+    "match": { "all": ["sort"], "any": ["price", "order", "lexicographic", "alphabet", "numeric", "string"] },
+    "description": "Sorting products by price orders the price strings lexicographically instead of numerically."
+  },
+  {
+    "id": "cart-badge-stale",
+    "bug": "cart-badge-stale",
+    "expectKind": ["defect", "advisory"],
+    "match": { "all": ["cart"], "any": ["badge", "count", "stale", "header", "number"] },
+    "description": "The header cart badge sticks at 1 after the first add though the cart page lists every item."
+  },
+  {
+    "id": "search-ignored",
+    "bug": "search-ignored",
+    "expectKind": ["defect", "advisory"],
+    "match": { "all": ["search"], "any": ["filter", "ignore", "all product", "every product", "result", "query", "unfiltered"] },
+    "description": "Search returns all products regardless of the query while the heading still echoes the query."
+  },
+  {
+    "id": "deals-500",
+    "bug": "deals-500",
+    "expectKind": ["hard-failure", "advisory"],
+    "match": { "all": ["deal"], "any": ["500", "error", "fail", "console", "load"] },
+    "description": "/api/deals returns HTTP 500; the deals page logs a console error and shows 'Failed to load deals'."
+  },
+  {
+    "id": "broken-docs-link",
+    "bug": "broken-docs-link",
+    "expectKind": ["hard-failure", "advisory"],
+    "match": { "all": ["doc"], "any": ["404", "not found", "broken", "link", "missing"] },
+    "description": "The footer Docs link points to /documentation, which 404s."
+  }
+]

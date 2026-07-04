@@ -5,11 +5,30 @@ import type { Effort } from '../run/effort.js';
  * authoritative; if a name here drifts from the glossary, the glossary wins.
  */
 
-/** The three Finding tiers (CONTEXT.md: Finding). */
-export type FindingKind = 'hard-failure' | 'regression' | 'advisory';
+/** The four Finding tiers (CONTEXT.md: Finding). A 'defect' is a reproduced semantic bug (ADR-0008). */
+export type FindingKind = 'hard-failure' | 'defect' | 'regression' | 'advisory';
 
 /** Where a Finding's fault lives (CONTEXT.md: Diagnosis). A wrong Flow script is 'flow', never 'test'. */
 export type FaultDomain = 'app' | 'flow' | 'environment';
+
+/** CONTEXT.md: Disposition — Triage's history-informed verdict. Annotates only; never dismisses (ADR-0008). */
+export type DispositionVerdict = 'bug' | 'intended-change' | 'known-issue' | 'unclear';
+
+/** A receipt behind a Disposition: the commit, PR, or issue Triage found. */
+export interface Citation {
+  kind: 'commit' | 'pr' | 'issue';
+  /** Commit SHA, PR number/URL, or issue number/URL. */
+  ref: string;
+  note?: string;
+}
+
+export interface Disposition {
+  verdict: DispositionVerdict;
+  citations: Citation[];
+  rationale: string;
+  /** 0–100. */
+  confidence: number;
+}
 
 /** CONTEXT.md: Diagnosis — the filing agent's judgment. Producers land per ADR-0006; schema-only for now. */
 export interface Diagnosis {
@@ -17,6 +36,8 @@ export interface Diagnosis {
   faultDomain: FaultDomain;
   /** 0–100. */
   confidence: number;
+  /** Written by the Triage agent at deep Efforts (ADR-0008). */
+  disposition?: Disposition;
 }
 
 export interface ConsoleEntry {
@@ -59,6 +80,8 @@ export interface Finding {
   detail: string;
   /** Path to WebM Evidence, relative to the Run artifact's evidence/ dir. */
   evidence?: string;
+  /** Defects only: the expectation the app violated and where it came from (ADR-0008). */
+  expectation?: { statement: string; source: 'docs' | 'brief' | 'common-sense' };
   diagnosis?: Diagnosis;
   console?: ConsoleEntry[];
   network?: NetworkEntry[];
@@ -93,6 +116,8 @@ export interface Environment {
   os: string;
   node: string;
   autoendVersion: string;
+  /** Model id every agent role ran on (ADR-0009 attribution); absent when exploration was skipped. */
+  model?: string;
 }
 
 /**

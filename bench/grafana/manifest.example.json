@@ -1,0 +1,34 @@
+{
+  "app": "grafana",
+  "version": "11.2.0",
+  "_note": "PLACEHOLDER manifest. Copy to manifest.json and replace every entry below with real mined issues (see README.md, Discovery mode). Shapes are illustrative only. `bug` is a stable per-entry id — curation sets it to the mined GitHub issue number.",
+  "entries": [
+    {
+      "id": "PLACEHOLDER-01-table-panel-column-sort",
+      "bug": "PLACEHOLDER-01",
+      "expectKind": ["defect"],
+      "match": { "all": ["table"], "any": ["sort", "column", "order", "header"] },
+      "description": "TO-CURATE: replace with a real mined issue. Illustrative shape only — a Table panel sorts by the wrong column after the query refreshes, and clicking a header no longer re-orders the rows.",
+      "issue": "https://github.com/grafana/grafana/issues/PLACEHOLDER",
+      "fixedIn": "11.3.0"
+    },
+    {
+      "id": "PLACEHOLDER-02-template-variable-interpolation",
+      "bug": "PLACEHOLDER-02",
+      "expectKind": ["defect"],
+      "match": { "all": ["variable"], "any": ["interpolat", "template", "substitut", "placeholder"] },
+      "description": "TO-CURATE: replace with a real mined issue. Illustrative shape only — a dashboard template variable is not interpolated into the panel title or query, so the panel shows the raw ${var} token instead of the selected value.",
+      "issue": "https://github.com/grafana/grafana/issues/PLACEHOLDER",
+      "fixedIn": "11.3.0"
+    },
+    {
+      "id": "PLACEHOLDER-03-repeated-panel-render",
+      "bug": "PLACEHOLDER-03",
+      "expectKind": ["defect", "hard-failure"],
+      "match": { "all": ["panel"], "any": ["repeat", "render", "blank", "duplicate"] },
+      "description": "TO-CURATE: replace with a real mined issue. Illustrative shape only — a repeated panel row renders only the first panel (or renders blank) when its repeat variable has multiple selected values.",
+      "issue": "https://github.com/grafana/grafana/issues/PLACEHOLDER",
+      "fixedIn": "11.3.0"
+    }
+  ]
+}
