@@ -1,10 +1,7 @@
-import type { Effort } from '../run/effort.js';
-import type { InteractionGraph } from '../graph/graph.js';
+// Mirror of src/report/types.ts — keep in sync; the root file is authoritative.
 
-/**
- * Data model for a Run's Report. Mirrors CONTEXT.md — the glossary is
- * authoritative; if a name here drifts from the glossary, the glossary wins.
- */
+/** Effort — the user-chosen depth preset for a Run (CONTEXT.md). */
+type Effort = 'low' | 'mid' | 'high' | 'xhigh' | 'ultra';
 
 /** The three Finding tiers (CONTEXT.md: Finding). */
 export type FindingKind = 'hard-failure' | 'regression' | 'advisory';
@@ -94,6 +91,24 @@ export interface Environment {
   os: string;
   node: string;
   autoendVersion: string;
+}
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  sampleUrls: string[];
+}
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  action: string;
+  count: number;
+}
+
+export interface InteractionGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
 }
 
 /**

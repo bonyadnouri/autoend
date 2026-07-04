@@ -119,7 +119,7 @@ async function main(): Promise<void> {
 
   if (values['no-serve']) return;
 
-  const viewer = await serveReport(artifactDir, Number(values.port));
+  const viewer = await serveReport(artifactDir, Number(values.port), repoRoot);
   console.log(`Report: ${pc.underline(viewer.url)} ${pc.dim('(Ctrl+C to stop)')}`);
   if (!values['no-open']) openInBrowser(viewer.url);
 }

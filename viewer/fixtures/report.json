@@ -1,0 +1,166 @@
+{
+  "runId": "run-2026-07-04-a1b2c3",
+  "target": "https://demo.shopflow.app",
+  "effort": "high",
+  "startedAt": "2026-07-04T14:02:11Z",
+  "finishedAt": "2026-07-04T14:06:44Z",
+  "flowsReplayed": 3,
+  "flowsDiscovered": 1,
+  "environment": {
+    "browser": "Chromium 130.0.6723.58",
+    "viewport": "1280×720",
+    "os": "macOS 15.5 (arm64)",
+    "node": "v23.6.0",
+    "autoendVersion": "0.1.1"
+  },
+  "flows": [
+    {
+      "id": "flow-login",
+      "title": "A returning shopper signs in",
+      "status": "passed",
+      "discoveredAt": "2026-06-28T09:14:00Z",
+      "lastPassedAt": "2026-07-04T14:02:39Z",
+      "durationMs": 2840,
+      "evidence": "evidence.webm",
+      "timeline": [
+        { "label": "goto /login", "status": "passed", "tMs": 0 },
+        { "label": "fill email + password", "status": "passed", "tMs": 900 },
+        { "label": "click Sign in", "status": "passed", "tMs": 1600 },
+        { "label": "land on /dashboard", "status": "passed", "tMs": 2840 }
+      ]
+    },
+    {
+      "id": "flow-checkout",
+      "title": "A shopper completes checkout",
+      "status": "passed",
+      "discoveredAt": "2026-06-28T09:20:00Z",
+      "lastPassedAt": "2026-07-04T14:04:10Z",
+      "durationMs": 5210,
+      "evidence": "evidence.webm",
+      "timeline": [
+        { "label": "goto /product/sku-4471", "status": "passed", "tMs": 0 },
+        { "label": "click Add to cart", "status": "passed", "tMs": 1200 },
+        { "label": "goto /checkout", "status": "passed", "tMs": 2400 },
+        { "label": "fill shipping + card", "status": "passed", "tMs": 3800 },
+        { "label": "click Place order", "status": "passed", "tMs": 4600 },
+        { "label": "land on /confirmation", "status": "passed", "tMs": 5210 }
+      ]
+    },
+    {
+      "id": "flow-cart-remove",
+      "title": "A shopper removes an item from the cart",
+      "status": "failed",
+      "discoveredAt": "2026-06-30T11:41:00Z",
+      "lastPassedAt": "2026-07-02T08:12:00Z",
+      "durationMs": 3120,
+      "evidence": "evidence.webm",
+      "timeline": [
+        { "label": "goto /cart", "status": "passed", "tMs": 0 },
+        { "label": "locate line item sku-4471", "status": "passed", "tMs": 700 },
+        { "label": "click Remove", "status": "passed", "tMs": 1500 },
+        { "label": "expect item removed", "status": "failed", "tMs": 3120 }
+      ]
+    },
+    {
+      "id": "flow-cart-promo",
+      "title": "A shopper applies a promo code in the cart",
+      "status": "discovered",
+      "discoveredAt": "2026-07-04T14:05:31Z",
+      "durationMs": 2610,
+      "evidence": "evidence.webm",
+      "timeline": [
+        { "label": "goto /cart", "status": "passed", "tMs": 0 },
+        { "label": "open promo field", "status": "passed", "tMs": 800 },
+        { "label": "apply promo SAVE10", "status": "passed", "tMs": 1900 },
+        { "label": "see discounted total", "status": "passed", "tMs": 2610 }
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-1",
+      "kind": "hard-failure",
+      "flowId": "flow-cart-promo",
+      "title": "Cart endpoint returns 500 for an empty promo code",
+      "detail": "While probing the promo field, submitting an empty code posts to /api/cart and the server responds 500 instead of a validation error. The cart view then renders a blank total, leaving the shopper stuck.",
+      "evidence": "evidence.webm",
+      "diagnosis": {
+        "rootCause": "/api/cart returns 500 when the promo field is empty",
+        "faultDomain": "app",
+        "confidence": 88
+      },
+      "console": [
+        { "level": "warning", "text": "Submitting cart update with empty promo code", "tMs": 1820 },
+        { "level": "error", "text": "POST /api/cart 500 (Internal Server Error)", "tMs": 2050 }
+      ],
+      "network": [
+        { "method": "GET", "url": "/api/cart", "status": 200, "tMs": 210 },
+        { "method": "POST", "url": "/api/cart", "status": 500, "tMs": 2040 }
+      ],
+      "timeline": [
+        { "label": "goto /cart", "status": "passed", "tMs": 0 },
+        { "label": "open promo field", "status": "passed", "tMs": 900 },
+        { "label": "submit empty promo", "status": "passed", "tMs": 1800 },
+        { "label": "expect validation error", "status": "failed", "tMs": 2300 }
+      ],
+      "screenshots": [
+        { "file": "before.png", "label": "before", "tMs": 900 },
+        { "file": "after.png", "label": "after", "tMs": 1800 },
+        { "file": "at-failure.png", "label": "at-failure", "tMs": 2300 }
+      ]
+    },
+    {
+      "id": "F-2",
+      "kind": "regression",
+      "flowId": "flow-cart-remove",
+      "title": "Removing an item from the cart no longer works",
+      "detail": "This Flow last passed two days ago. The Remove control still renders, but clicking it leaves the line item in place and the cart total unchanged, so the shopper cannot empty items they no longer want.",
+      "evidence": "evidence.webm",
+      "timeline": [
+        { "label": "goto /cart", "status": "passed", "tMs": 0 },
+        { "label": "click Remove", "status": "passed", "tMs": 1500 },
+        { "label": "expect item removed", "status": "failed", "tMs": 3120 }
+      ],
+      "screenshots": [
+        { "file": "before.png", "label": "before", "tMs": 700 },
+        { "file": "at-failure.png", "label": "at-failure", "tMs": 3120 }
+      ]
+    },
+    {
+      "id": "F-3",
+      "kind": "advisory",
+      "flowId": "flow-checkout",
+      "title": "Place order button has no accessible label",
+      "detail": "The primary checkout action is an icon-only button with no text or aria-label, so assistive technology announces it as an unlabeled button. Adding an accessible name would make the final step usable for screen-reader shoppers."
+    },
+    {
+      "id": "F-4",
+      "kind": "advisory",
+      "title": "Low colour contrast on secondary buttons",
+      "detail": "Secondary buttons use a light grey label on a white surface (roughly 2.4:1), below the WCAG AA threshold of 4.5:1 for body text.",
+      "resolution": "suppressed"
+    }
+  ],
+  "heals": [
+    {
+      "flowId": "flow-login",
+      "summary": "Re-pointed the sign-in step at the renamed submit control after the login form was restructured",
+      "evidence": "evidence.webm"
+    }
+  ],
+  "graph": {
+    "nodes": [
+      { "id": "/", "label": "/", "sampleUrls": ["https://demo.shopflow.app/"] },
+      { "id": "/login", "label": "/login", "sampleUrls": ["https://demo.shopflow.app/login"] },
+      { "id": "/dashboard", "label": "/dashboard", "sampleUrls": ["https://demo.shopflow.app/dashboard"] },
+      { "id": "/product/:id", "label": "/product/:id", "sampleUrls": ["https://demo.shopflow.app/product/42"] },
+      { "id": "/cart", "label": "/cart", "sampleUrls": ["https://demo.shopflow.app/cart"] }
+    ],
+    "edges": [
+      { "from": "/", "to": "/login", "action": "navigate", "count": 1 },
+      { "from": "/login", "to": "/dashboard", "action": "navigate", "count": 1 },
+      { "from": "/dashboard", "to": "/product/:id", "action": "navigate", "count": 2 },
+      { "from": "/product/:id", "to": "/cart", "action": "navigate", "count": 1 }
+    ]
+  }
+}

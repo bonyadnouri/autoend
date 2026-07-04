@@ -7,7 +7,8 @@ import { runFlowScript } from '../replay/replay.js';
 import type { Transition } from '../graph/graph.js';
 import { transitionsFromVisits } from '../graph/record.js';
 import type { ExplorationBudget } from '../run/effort.js';
-import type { Finding } from '../report/types.js';
+import type { Finding, FlowSnapshot } from '../report/types.js';
+import { withoutSensitiveEnv } from '../run/sensitive-env.js';
 import { closeSession } from './hands.js';
 
 export interface ExploreOptions {
@@ -23,6 +24,8 @@ export interface ExploreOptions {
 export interface ExplorationResult {
   discovered: number;
   findings: Finding[];
+  /** A snapshot per newly discovered Flow — the Report's receipts (CONTEXT.md: Report). */
+  flows: FlowSnapshot[];
   /** Observed navigations from verifying discovered flows (issue #16). */
   transitions: Transition[];
 }
@@ -64,7 +67,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey) {
     console.warn('exploration skipped: CURSOR_API_KEY not set — run `npx @bonyadnouri/autoend init`');
-    return { discovered: 0, findings: [], transitions: [] };
+    return { discovered: 0, findings: [], flows: [], transitions: [] };
   }
 
   const workDir = join(opts.runDir, 'explore');
@@ -94,30 +97,43 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   }
 
   const proposed = collectProposedFlows(reports, opts.knownFlows);
+  const flowSnapshots: FlowSnapshot[] = [];
   const transitions: Transition[] = [];
-  let discovered = 0;
   if (proposed.length > 0) {
-    const browser = await chromium.launch();
-    try {
-      for (const flow of proposed) {
-        const scriptPath = join(workDir, `${flow.id}.mts`);
-        await writeFile(scriptPath, flow.script);
-        const outcome = await runFlowScript(browser, scriptPath, opts.target, opts.evidenceDir, `discovered-${flow.id}`);
-        transitions.push(...transitionsFromVisits(outcome.visits));
-        if (outcome.ok) {
-          const now = new Date().toISOString();
-          await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
-          discovered += 1;
-        } else {
-          console.warn(`proposed flow "${flow.id}" failed verification and was discarded: ${outcome.error}`);
+    // Verify-by-running executes LLM-authored scripts in-process (ADR-0002).
+    // Hide secrets from them for the duration (issue #3).
+    await withoutSensitiveEnv(async () => {
+      const browser = await chromium.launch();
+      try {
+        for (const flow of proposed) {
+          const scriptPath = join(workDir, `${flow.id}.mts`);
+          await writeFile(scriptPath, flow.script);
+          const outcome = await runFlowScript(browser, scriptPath, opts.target, opts.evidenceDir, `discovered-${flow.id}`);
+          transitions.push(...transitionsFromVisits(outcome.visits));
+          if (outcome.ok) {
+            const now = new Date().toISOString();
+            await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
+            flowSnapshots.push({
+              id: flow.id,
+              title: flow.title,
+              status: 'discovered',
+              discoveredAt: now,
+              lastPassedAt: now,
+              timeline: outcome.timeline,
+              evidence: outcome.evidence,
+              durationMs: outcome.durationMs,
+            });
+          } else {
+            console.warn(`proposed flow "${flow.id}" failed verification and was discarded: ${outcome.error}`);
+          }
         }
+      } finally {
+        await browser.close();
       }
-    } finally {
-      await browser.close();
-    }
+    });
   }
 
-  return { discovered, findings, transitions };
+  return { discovered: flowSnapshots.length, findings, flows: flowSnapshots, transitions };
 }
 
 async function runExplorer(
@@ -234,9 +250,12 @@ export function parseExplorerReport(text: string): ExplorerReport | undefined {
     for (const f of raw.flows as Array<Record<string, unknown>>) {
       const id = slugify(String(f?.id ?? f?.title ?? ''));
       const script = typeof f?.script === 'string' ? f.script : undefined;
-      if (id && script && script.includes('export default')) {
-        flows.push({ id, title: String(f.title ?? id), script });
+      if (!id || !script || !script.includes('export default')) continue;
+      if (looksDangerous(script)) {
+        console.warn(`proposed flow "${id}" rejected: script uses a disallowed API (issue #3)`);
+        continue;
       }
+      flows.push({ id, title: String(f.title ?? id), script });
     }
   }
   const findings: ExplorerReport['findings'] = [];
@@ -268,6 +287,29 @@ export function collectProposedFlows(
     }
   }
   return out;
+}
+
+/**
+ * Reject a proposed script that reaches for capabilities a Flow never needs
+ * (issue #3). A Flow only drives the Playwright `page`; anything touching the
+ * Node runtime, the environment, or dynamic module loading is a red flag —
+ * either a bad generation or prompt-injected exfiltration. Cheap denylist,
+ * defense-in-depth alongside `withoutSensitiveEnv`; not a substitute for a
+ * real sandbox. Exported for tests.
+ */
+const DANGEROUS_SCRIPT_PATTERNS: RegExp[] = [
+  /\bchild_process\b/,
+  /\bnode:/,
+  /\brequire\s*\(/,
+  /\bimport\s*\(/,
+  /\bprocess\s*\.\s*(env|exit|binding|kill|dlopen)/,
+  /\beval\s*\(/,
+  /\bglobalThis\b/,
+  /\bFunction\s*\(/,
+];
+
+export function looksDangerous(script: string): boolean {
+  return DANGEROUS_SCRIPT_PATTERNS.some((re) => re.test(script));
 }
 
 /** Kebab-case a title into a flow id. Exported for tests. */
