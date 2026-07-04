@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
 import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import pc from 'picocolors';
 import { loadConfig, loadDotEnv } from './config.js';
 import { handsAvailable } from './explore/hands.js';
+import { publishRun } from './publish/publish.js';
 import { runsDir } from './report/artifact.js';
 import { EFFORT_LEVELS, isEffort, type Effort } from './run/effort.js';
 import { executeRun } from './run/run.js';
 import { runSetupWizard } from './setup/wizard.js';
-import { serveReport } from './viewer/server.js';
 
 const USAGE = `Usage:
   autoend init               guided setup (target, effort, API key)
@@ -21,9 +21,6 @@ const USAGE = `Usage:
 Options:
   -e, --effort <level>   ${EFFORT_LEVELS.join(' | ')} (default: from config, else mid)
       --model <id>       Cursor model id for all agents (default: strongest available)
-      --no-open          don't open the Report in a browser
-      --no-serve         write the Run artifact and exit (CI-style)
-      --port <n>         viewer port (default: random)
   -h, --help             show this help
 `;
 
@@ -33,9 +30,6 @@ async function main(): Promise<void> {
     options: {
       effort: { type: 'string', short: 'e' },
       model: { type: 'string' },
-      'no-open': { type: 'boolean', default: false },
-      'no-serve': { type: 'boolean', default: false },
-      port: { type: 'string', default: '0' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -122,17 +116,23 @@ async function main(): Promise<void> {
   );
   console.log(pc.dim(`Artifact: ${artifactDir}`));
 
-  if (values['no-serve']) return;
-
-  const viewer = await serveReport(artifactDir, Number(values.port), repoRoot);
-  console.log(`Report: ${pc.underline(viewer.url)} ${pc.dim('(Ctrl+C to stop)')}`);
-  if (!values['no-open']) openInBrowser(viewer.url);
-}
-
-function openInBrowser(url: string): void {
-  const command =
-    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-  spawn(command, [url], { detached: true, stdio: 'ignore', shell: process.platform === 'win32' }).unref();
+  try {
+    const published = await publishRun(artifact, join(artifactDir, 'evidence'));
+    if (published.skipped) {
+      console.warn(
+        pc.yellow(
+          'warning: SUPABASE_URL / key not set — results not published (add them to .env to publish)',
+        ),
+      );
+    } else {
+      console.log(
+        `${pc.cyan('Published to Supabase')} · ${published.tests} tests · ${published.issues} issues · ${published.investigations} investigations`,
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(pc.yellow(`warning: failed to publish results to Supabase: ${message}`));
+  }
 }
 
 main().catch((error) => {

@@ -84,14 +84,15 @@ $ npx @bonyadnouri/autoend
 
 Run starting http://localhost:3000 · effort mid
 Run finished in 94.1s · 12 replayed · 2 discovered · all clear
-Report: http://127.0.0.1:53211/
+Artifact: .autoend/runs/2026-07-04T10-01-00-000Z
+Published to Supabase · 12 tests · 2 issues · 1 investigations
 ```
 
 Your **first Run is a discovery run** — the map is empty, so agents spend the whole budget exploring and the map gets its first flows. Every Run after that opens by replaying everything already known, so regressions surface even at the lowest effort.
 
 ### 3. Read the report
 
-A browser tab opens with the verdict up top and findings below, sorted by how much you should care:
+Each Run writes its results to Supabase (see [Publishing results](#publishing-results-to-supabase)), where the Lumen dashboard reads them. Findings are sorted by how much you should care:
 
 | Tier | Meaning | Your move |
 |---|---|---|
@@ -104,6 +105,26 @@ A browser tab opens with the verdict up top and findings below, sorted by how mu
 Every finding carries a video. Watch it before you read another line of logs. At deep efforts (`high`+), findings also carry a **Disposition**: a Triage agent researches your git history and GitHub issues and annotates each finding as `bug`, `intended-change`, or `known-issue` — always with the commit/PR/issue receipts, never deciding for you. Dismissing stays your click; it just comes with the evidence already on screen.
 
 ![autoend report showing the all clear state](docs/assets/viewer-all-clear.png)
+
+### Publishing results to Supabase
+
+A Run publishes its results to the Supabase project behind the Lumen dashboard. Configure these environment variables (in the gitignored `.env`, or the shell):
+
+```sh
+SUPABASE_URL=https://your-project.supabase.co
+# Preferred: the service-role key — needed to upload evidence video to Storage.
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+# Or, for table writes only (no evidence upload), the anon key:
+# SUPABASE_ANON_KEY=your-anon-key
+```
+
+When set, each Run:
+
+- writes real results into `tests` (from flows), `issues` (from findings), and `investigations` (evidence detail) under the `shopflow-default` analysis, and updates that analysis's summary counts;
+- uploads each Run's WebM video to a public `evidence` Storage bucket and points the investigation's `replay.videoUrl` at it, so the dashboard plays the real recording;
+- writes the analysis summary **last**, so `analyses.analyzed_at` is an atomic "this Run is fully published" marker — a newer timestamp means fresh, complete data.
+
+Everything the Run does not produce (app map, journeys, insights) stays as the dashboard's seeded data. When the variables are unset, the Run still completes and writes its local artifact; it just prints a warning and skips publishing.
 
 ### 4. Choose your effort
 
@@ -126,9 +147,6 @@ autoend clean              delete all local Run artifacts
 
   -e, --effort <level>     low | mid | high | xhigh | ultra
       --model <id>         Cursor model id for all agents (default: strongest available)
-      --no-open            don't open the Report in a browser
-      --no-serve           write the Run artifact and exit (CI-style)
-      --port <n>           viewer port (default: random)
 ```
 
 Model precedence: `--model` → `AUTOEND_MODEL` env var → `"model"` in `.autoend/config.json` → the strongest model your Cursor account can route (every agent role runs the same strong model by design — ADR-0009). The resolved model is printed at Run start and recorded in the report.
@@ -179,7 +197,7 @@ Early and honest about it. The architecture is settled, documented, and verified
 - [x] Explorer fleet — Cursor agents driving [agent-browser](https://github.com/vercel-labs/agent-browser) in isolated sessions, verify-before-map-entry
 - [x] Deep pipeline (`high`+): Recon → persona Waves → Verifier → Triage ([ADR-0007](./docs/adr/0007-staged-exploration-pipeline.md)/[0008](./docs/adr/0008-findings-earn-trust-by-reproduction-and-receipts.md))
 - [x] Benchmark harness — seeded mini-app inner loop + Grafana real-history scaffolding ([ADR-0009](./docs/adr/0009-real-history-benchmark-validates-the-fleet.md)); first baseline numbers still to be produced
-- [x] Report viewer — verdict, tiers, embedded evidence. **Known gap:** the viewer does not render the new `defect` tier or Dispositions yet — deep-effort reports are written correctly but should be read from `report.json` until the viewer catches up
+- [x] Results published to Supabase (Lumen dashboard) — verdict, tiers, embedded evidence. **Known gap:** the dashboard predates the deep pipeline — `defect` findings publish with a mapped severity, but Dispositions and violated expectations aren't rendered there yet; read them from the local `report.json`
 - [x] Guided setup (`autoend init`)
 - [ ] Heal-and-notify on replay failures
 - [ ] Report resolution actions (dismiss / reject / suppress)
@@ -219,7 +237,7 @@ The mini-app is the fast inner loop — deterministic, seeded bugs, minutes per 
 npm install
 npm test              # vitest — includes a real browser replay integration test
 npm run build         # tsc → dist/
-npm run dev -- http://localhost:3000 -e low --no-open
+npm run dev -- http://localhost:3000 -e low
 ```
 
 ## License
