@@ -10,9 +10,11 @@ import { runsDir } from './report/artifact.js';
 import { EFFORT_LEVELS, isEffort, type Effort } from './run/effort.js';
 import { executeRun } from './run/run.js';
 import { runSetupWizard } from './setup/wizard.js';
+import { runServe } from './serve/serve.js';
 
 const USAGE = `Usage:
   autoend init               guided setup (target, effort, API key)
+  autoend serve              watch Supabase for queued runs (Lumen integration)
   autoend [target-url]       start a Run (falls back to your configured target)
   autoend clean              delete all local Run artifacts
 
@@ -49,6 +51,10 @@ async function main(): Promise<void> {
   if (command === 'clean') {
     await rm(runsDir(repoRoot), { recursive: true, force: true });
     console.log('Local Run artifacts deleted.');
+    return;
+  }
+  if (command === 'serve') {
+    await runServe({ repoRoot });
     return;
   }
   if (positionals.length > 1) {
