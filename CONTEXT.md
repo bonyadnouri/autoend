@@ -29,7 +29,7 @@ A single item in a Report that asks for the user's attention. Three kinds: a Har
 _Avoid_: issue, bug (a Finding may not be a bug), error
 
 **Diagnosis**:
-The filing agent's judgment attached to a Finding: root cause, fault domain (app, test, or environment), and confidence. Optional — its depth scales with Effort, and a Finding without one is still valid.
+The filing agent's judgment attached to a Finding: root cause, fault domain (app, flow, or environment), and confidence. Optional — its depth scales with Effort, and a Finding without one is still valid.
 _Avoid_: analysis, RCA, triage, verdict
 
 **Reject**:
