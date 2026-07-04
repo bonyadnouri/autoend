@@ -51,7 +51,7 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
   const { dir, evidenceDir } = await prepareRunDir(opts.repoRoot, runId);
 
   const flows = await listFlows(opts.repoRoot);
-  const replay = await replayFlowMap(opts.repoRoot, opts.target, flows, evidenceDir);
+  const replay = await replayFlowMap(opts.repoRoot, opts.target, flows, evidenceDir, runId);
 
   // Exploration is best-effort (issue #1): replaying the whole map always
   // completes, so an exploration crash must never swallow replay's regressions
@@ -62,6 +62,7 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
       repoRoot: opts.repoRoot,
       target: opts.target,
       budget: EFFORT_BUDGETS[opts.effort],
+      runId,
       runDir: dir,
       evidenceDir,
       knownFlows: flows,

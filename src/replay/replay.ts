@@ -2,7 +2,7 @@ import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
-import { flowMapDir, saveFlowMeta, type FlowMeta } from '../map/flow-map.js';
+import { flowMapDir, recordFlowOutcome, type FlowMeta } from '../map/flow-map.js';
 import type {
   ConsoleEntry,
   Finding,
@@ -155,6 +155,7 @@ export async function replayFlowMap(
   target: URL,
   flows: FlowMeta[],
   evidenceDir: string,
+  runId: string,
 ): Promise<ReplayResult> {
   if (flows.length === 0) {
     return { replayed: 0, findings: [], heals: [], flows: [] };
@@ -185,6 +186,8 @@ export async function replayFlowMap(
           if (!outcome.ok) {
             // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
             // before reporting. Until healing exists, every failure is a Regression.
+            const recorded = await recordFlowOutcome(repoRoot, flow, runId, false);
+            snapshot.lastPassedAt = recorded.lastPassedAt;
             const finding: Finding = {
               id: `regression-${flow.id}`,
               kind: 'regression',
@@ -199,9 +202,8 @@ export async function replayFlowMap(
             };
             return { snapshot, finding };
           }
-          const lastPassedAt = new Date().toISOString();
-          await saveFlowMeta(repoRoot, { ...flow, lastPassedAt });
-          snapshot.lastPassedAt = lastPassedAt;
+          const recorded = await recordFlowOutcome(repoRoot, flow, runId, true);
+          snapshot.lastPassedAt = recorded.lastPassedAt;
           return { snapshot };
         },
       ),
