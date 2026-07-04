@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { flowMapDir, saveFlowMeta, type FlowMeta } from '../map/flow-map.js';
 import type { Finding, Heal } from '../report/types.js';
+import { withoutSensitiveEnv } from '../run/sensitive-env.js';
 
 export interface ReplayResult {
   replayed: number;
@@ -83,7 +84,10 @@ export async function replayFlowMap(
   }
   const browser = await chromium.launch();
   try {
-    const outcomes = await withPool(flows, REPLAY_WORKERS, async (flow) => {
+    // Map scripts are LLM-authored and imported in-process (ADR-0002); hide
+    // secrets from them while the whole pool runs (issue #3). Scrubbing wraps
+    // the batch, not each script, because process.env is process-global.
+    const outcomes = await withoutSensitiveEnv(() => withPool(flows, REPLAY_WORKERS, async (flow) => {
       const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
       const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
       if (!outcome.ok) {
@@ -101,7 +105,7 @@ export async function replayFlowMap(
       }
       await saveFlowMeta(repoRoot, { ...flow, lastPassedAt: new Date().toISOString() });
       return undefined;
-    });
+    }));
     return {
       replayed: flows.length,
       findings: outcomes.filter((f): f is Finding => f !== undefined),
