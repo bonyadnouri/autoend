@@ -77,9 +77,12 @@ $ npx @bonyadnouri/autoend init
 ◆ Where does your app run?              http://localhost:3000
 ◆ How hard should a Run test by default?  mid — everyday runs · ~2-3 min
 ◆ Cursor API key                        ✓ saved to .env
+◆ Supabase URL (Enter to skip publishing)  https://your-project.supabase.co
+◆ Which Supabase key will you paste?    service-role (recommended)
+◆ Supabase key                          ✓ saved to .env
 ```
 
-`init` writes `.autoend/config.json`, stores your API key in a gitignored `.env`, and updates your `.gitignore` so run artifacts and secrets never get committed.
+`init` writes `.autoend/config.json`, stores your keys in a gitignored `.env` (the Cursor API key that powers the agents, and — optionally — the Supabase URL + key that publishing needs; press Enter at the URL prompt to skip and keep Runs local), and updates your `.gitignore` so run artifacts and secrets never get committed.
 
 ### 2. Run
 
@@ -112,7 +115,7 @@ Every finding carries a video. Watch it before you read another line of logs. At
 
 ### Publishing results to Supabase
 
-A Run publishes its results to the Supabase project behind the Lumen dashboard. Configure these environment variables (in the gitignored `.env`, or the shell):
+A Run publishes its results to the Supabase project behind the Lumen dashboard. `autoend init` prompts for these and writes them to `.env`; to configure by hand instead, set (in the gitignored `.env`, or the shell):
 
 ```sh
 SUPABASE_URL=https://your-project.supabase.co

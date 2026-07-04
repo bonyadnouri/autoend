@@ -25,7 +25,7 @@ export async function runSetupWizard(repoRoot: string): Promise<void> {
       '',
       `${pc.dim('1.')} Known flows are replayed — fast, deterministic`,
       `${pc.dim('2.')} Agents explore new surface within your effort budget`,
-      `${pc.dim('3.')} A report opens: watch what broke, dismiss what didn't`,
+      `${pc.dim('3.')} Results publish to your dashboard: watch what broke, with video`,
     ].join('\n'),
     'How it works',
   );
@@ -65,6 +65,65 @@ export async function runSetupWizard(repoRoot: string): Promise<void> {
     p.log.success('Saved to .env');
   }
 
+  // Publishing is optional: with Supabase configured, Runs publish results to
+  // the Lumen dashboard; without it they stay local and publish.ts skips with
+  // a warning. Only missing vars are prompted — appendDotEnv appends lines,
+  // and loadDotEnv gives the FIRST occurrence precedence, so re-writing an
+  // existing var would add a dead line.
+  let publishing = false;
+  const hasSupabaseKey = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY);
+  if (process.env.SUPABASE_URL && hasSupabaseKey) {
+    publishing = true;
+    p.log.success('Supabase configured — Runs will publish to your dashboard.');
+  } else {
+    let url = process.env.SUPABASE_URL;
+    if (!url) {
+      const answer = await p.text({
+        message: `Supabase URL ${pc.dim('(supabase.com → Project Settings → API · Enter to skip publishing)')}`,
+        placeholder: 'https://your-project.supabase.co',
+        defaultValue: '',
+        validate: (value) => {
+          const v = (value ?? '').trim();
+          if (v.length === 0) return undefined; // empty = skip publishing
+          try {
+            new URL(v);
+            return undefined;
+          } catch {
+            return 'Enter a full URL, e.g. https://your-project.supabase.co';
+          }
+        },
+      });
+      bail(answer);
+      url = (answer as string).trim();
+      if (url) await appendDotEnv(repoRoot, 'SUPABASE_URL', url);
+    }
+
+    if (!url) {
+      p.log.info('Publishing skipped — Runs stay local. Rerun init (or edit .env) to enable it later.');
+    } else if (hasSupabaseKey) {
+      publishing = true;
+      p.log.success('Saved to .env — Runs will publish to your dashboard.');
+    } else {
+      const keyName = await p.select<'SUPABASE_SERVICE_ROLE_KEY' | 'SUPABASE_ANON_KEY'>({
+        message: 'Which Supabase key will you paste?',
+        options: [
+          { value: 'SUPABASE_SERVICE_ROLE_KEY', label: 'service-role (recommended)', hint: 'needed to upload evidence video to Storage' },
+          { value: 'SUPABASE_ANON_KEY', label: 'anon / publishable', hint: 'table writes only — no hosted video' },
+        ],
+        initialValue: 'SUPABASE_SERVICE_ROLE_KEY',
+      });
+      bail(keyName);
+      const key = await p.password({
+        message: `Supabase key ${pc.dim('(Project Settings → API — never commit it)')}`,
+        validate: (value) => ((value ?? '').trim().length > 0 ? undefined : 'Required to publish — or rerun init and skip the URL'),
+      });
+      bail(key);
+      await appendDotEnv(repoRoot, keyName as string, (key as string).trim());
+      publishing = true;
+      p.log.success('Saved to .env — Runs will publish to your dashboard.');
+    }
+  }
+
   const spinner = p.spinner();
   spinner.start('Writing configuration');
   await saveConfig(repoRoot, { target: target as string, effort: effort as Effort });
@@ -83,6 +142,7 @@ export async function runSetupWizard(repoRoot: string): Promise<void> {
       `${pc.cyan(`npx ${PACKAGE} -e high`)}    push harder for one run`,
       '',
       pc.dim(`Defaults: ${target as string} · effort ${effort as string} (${budget.explorers} explorers, ${budget.seconds}s exploration)`),
+      pc.dim(`Publishing: ${publishing ? 'on — results appear in your dashboard' : 'off — Runs stay local'}`),
       pc.dim(`Commit ${pc.reset(pc.dim('.autoend/flows/'))} — it is your team's shared baseline.`),
     ].join('\n'),
     'You are set',
