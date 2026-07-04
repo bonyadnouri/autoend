@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { flowMapDir, recordFlowOutcome, type FlowMeta } from '../map/flow-map.js';
+import { formatRunHistory, isFlaky } from '../map/flaky.js';
 import type {
   ConsoleEntry,
   Finding,
@@ -186,20 +187,35 @@ export async function replayFlowMap(
           if (!outcome.ok) {
             // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
             // before reporting. Until healing exists, every failure is a Regression.
+            const flaky = isFlaky(flow.recentRuns);
             const recorded = await recordFlowOutcome(repoRoot, flow, runId, false);
             snapshot.lastPassedAt = recorded.lastPassedAt;
-            const finding: Finding = {
-              id: `regression-${flow.id}`,
-              kind: 'regression',
-              flowId: flow.id,
-              title: `Flow "${flow.title}" failed on replay`,
-              detail: outcome.error ?? 'unknown failure',
-              evidence: outcome.evidence,
-              console: outcome.console,
-              network: outcome.network,
-              timeline: outcome.timeline,
-              screenshots: outcome.screenshots,
-            };
+            const history = formatRunHistory(flow.recentRuns);
+            const finding: Finding = flaky
+              ? {
+                  id: `flaky-${flow.id}`,
+                  kind: 'advisory',
+                  flowId: flow.id,
+                  title: `Flaky flow: "${flow.title}" failed on replay`,
+                  detail: `${outcome.error ?? 'unknown failure'}. Prior outcomes: ${history}. Mixed pass/fail history suggests instability, not a definite regression.`,
+                  evidence: outcome.evidence,
+                  console: outcome.console,
+                  network: outcome.network,
+                  timeline: outcome.timeline,
+                  screenshots: outcome.screenshots,
+                }
+              : {
+                  id: `regression-${flow.id}`,
+                  kind: 'regression',
+                  flowId: flow.id,
+                  title: `Flow "${flow.title}" failed on replay`,
+                  detail: outcome.error ?? 'unknown failure',
+                  evidence: outcome.evidence,
+                  console: outcome.console,
+                  network: outcome.network,
+                  timeline: outcome.timeline,
+                  screenshots: outcome.screenshots,
+                };
             return { snapshot, finding };
           }
           const recorded = await recordFlowOutcome(repoRoot, flow, runId, true);

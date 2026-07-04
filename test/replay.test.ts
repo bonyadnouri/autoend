@@ -104,6 +104,37 @@ describe('replay engine', () => {
     expect(failed?.lastFailedAt).toBeDefined();
     expect(failed?.recentRuns?.at(-1)).toEqual({ runId: 'run-replay-test', passed: false });
   }, 90_000);
+
+  it('files an Advisory instead of a Regression when mixed pass/fail history suggests flakiness', async () => {
+    const flakyRepo = await mkdtemp(join(tmpdir(), 'autoend-flaky-'));
+    const now = new Date().toISOString();
+    await addFlow(
+      flakyRepo,
+      {
+        id: 'unstable-flow',
+        title: 'An unstable flow',
+        discoveredAt: now,
+        recentRuns: [
+          { runId: 'run-old-pass', passed: true },
+          { runId: 'run-old-fail', passed: false },
+        ],
+      },
+      FAILING_FLOW,
+    );
+    const evidenceDir = join(flakyRepo, 'evidence');
+    await mkdir(evidenceDir, { recursive: true });
+
+    const result = await replayFlowMap(flakyRepo, target, await listFlows(flakyRepo), evidenceDir, 'run-flaky-test');
+
+    expect(result.findings).toHaveLength(1);
+    const finding = result.findings[0];
+    expect(finding.kind).toBe('advisory');
+    expect(finding.id).toBe('flaky-unstable-flow');
+    expect(finding.flowId).toBe('unstable-flow');
+    expect(finding.detail).toContain('pass → fail');
+
+    await rm(flakyRepo, { recursive: true, force: true });
+  }, 90_000);
 });
 
 describe('flow capture', () => {
