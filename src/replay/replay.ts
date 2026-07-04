@@ -3,12 +3,16 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { flowMapDir, saveFlowMeta, type FlowMeta } from '../map/flow-map.js';
+import type { Transition } from '../graph/graph.js';
+import { pushVisit, transitionsFromVisits } from '../graph/record.js';
 import type { Finding, Heal } from '../report/types.js';
 
 export interface ReplayResult {
   replayed: number;
   findings: Finding[];
   heals: Heal[];
+  /** Observed navigations, for the interaction graph (issue #16). */
+  transitions: Transition[];
 }
 
 /**
@@ -30,6 +34,8 @@ export interface ScriptOutcome {
   error?: string;
   /** Evidence filename within evidenceDir (WebM). */
   evidence?: string;
+  /** Ordered main-frame URLs the Flow visited, for the interaction graph. */
+  visits: string[];
 }
 
 /**
@@ -47,6 +53,13 @@ export async function runFlowScript(
   const context = await browser.newContext({ recordVideo: { dir: evidenceDir } });
   // TODO: inject shared storage state (src/auth/session.ts) once fleet auth exists.
   const page = await context.newPage();
+
+  // Record the main frame's navigations to feed the interaction graph (#16).
+  const visits: string[] = [];
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) pushVisit(visits, frame.url());
+  });
+
   let failure: unknown;
   try {
     const script = await loadFlowScript(scriptPath);
@@ -62,9 +75,9 @@ export async function runFlowScript(
     await rename(await video.path(), join(evidenceDir, evidence));
   }
   if (failure !== undefined) {
-    return { ok: false, error: failure instanceof Error ? failure.message : String(failure), evidence };
+    return { ok: false, error: failure instanceof Error ? failure.message : String(failure), evidence, visits };
   }
-  return { ok: true, evidence };
+  return { ok: true, evidence, visits };
 }
 
 /**
@@ -79,13 +92,15 @@ export async function replayFlowMap(
   evidenceDir: string,
 ): Promise<ReplayResult> {
   if (flows.length === 0) {
-    return { replayed: 0, findings: [], heals: [] };
+    return { replayed: 0, findings: [], heals: [], transitions: [] };
   }
+  const transitions: Transition[] = [];
   const browser = await chromium.launch();
   try {
     const outcomes = await withPool(flows, REPLAY_WORKERS, async (flow) => {
       const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
       const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
+      transitions.push(...transitionsFromVisits(outcome.visits));
       if (!outcome.ok) {
         // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
         // before reporting. Until healing exists, every failure is a Regression.
@@ -106,6 +121,7 @@ export async function replayFlowMap(
       replayed: flows.length,
       findings: outcomes.filter((f): f is Finding => f !== undefined),
       heals: [],
+      transitions,
     };
   } finally {
     await browser.close();

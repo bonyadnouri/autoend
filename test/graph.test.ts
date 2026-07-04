@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalizeState, isDynamicSegment } from '../src/graph/state.js';
 import { buildGraph } from '../src/graph/graph.js';
+import { NAVIGATE, pushVisit, transitionsFromVisits } from '../src/graph/record.js';
 
 const TARGET = 'https://shop.example.com';
 
@@ -79,5 +80,37 @@ describe('buildGraph', () => {
     const graph = buildGraph(transitions, TARGET);
     const product = graph.nodes.find((n) => n.id === '/product/:id');
     expect(product?.sampleUrls.length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe('transitionsFromVisits', () => {
+  it('pairs consecutive visits into navigate transitions', () => {
+    const t = transitionsFromVisits(['https://a/', 'https://a/cart', 'https://a/checkout']);
+    expect(t).toEqual([
+      { fromUrl: 'https://a/', action: NAVIGATE, toUrl: 'https://a/cart' },
+      { fromUrl: 'https://a/cart', action: NAVIGATE, toUrl: 'https://a/checkout' },
+    ]);
+  });
+
+  it('drops self-transitions (reloads)', () => {
+    const t = transitionsFromVisits(['https://a/', 'https://a/', 'https://a/next']);
+    expect(t).toEqual([{ fromUrl: 'https://a/', action: NAVIGATE, toUrl: 'https://a/next' }]);
+  });
+
+  it('returns nothing for zero or one visit', () => {
+    expect(transitionsFromVisits([])).toEqual([]);
+    expect(transitionsFromVisits(['https://a/'])).toEqual([]);
+  });
+});
+
+describe('pushVisit', () => {
+  it('ignores blanks, about:blank, and consecutive duplicates', () => {
+    const visits: string[] = [];
+    pushVisit(visits, 'about:blank');
+    pushVisit(visits, '');
+    pushVisit(visits, 'https://a/');
+    pushVisit(visits, 'https://a/');
+    pushVisit(visits, 'https://a/next');
+    expect(visits).toEqual(['https://a/', 'https://a/next']);
   });
 });

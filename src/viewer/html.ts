@@ -203,6 +203,31 @@ fetch('/api/report').then(r => r.json()).then(report => {
   }
 
   const body = document.getElementById('body');
+
+  // Interaction map (#16): states the Run visited and the navigations between
+  // them, clustered so URLs for the same screen share one node.
+  if (report.graph && report.graph.nodes.length > 0) {
+    const g = report.graph;
+    const section = el('section', { style: '--tier: var(--heal)' });
+    section.appendChild(el('h2', {}, [
+      el('span', { text: 'Interaction map ' }),
+      el('span', { class: 'count', text: g.nodes.length + ' states' }),
+    ]));
+    section.appendChild(el('div', { class: 'explain',
+      text: 'States visited during the run and the navigations between them. URLs that denote the same screen (e.g. /product/1 and /product/2) are clustered into one node.' }));
+    const card = el('div', { class: 'card' });
+    if (g.edges.length > 0) {
+      for (const e of g.edges) {
+        card.appendChild(el('div', { class: 'detail',
+          text: e.from + '  —(' + e.action + ')→  ' + e.to + (e.count > 1 ? '  ×' + e.count : '') }));
+      }
+    } else {
+      card.appendChild(el('div', { class: 'detail', text: g.nodes.map((n) => n.id).join('\\n') }));
+    }
+    section.appendChild(card);
+    body.appendChild(section);
+  }
+
   const total = nHard + nReg + nHeal + nAdv;
   if (total === 0) {
     body.appendChild(el('div', { class: 'allclear' }, [

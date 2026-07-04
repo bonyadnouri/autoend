@@ -1,6 +1,7 @@
 import { listFlows } from '../map/flow-map.js';
 import { explore } from '../explore/explorer.js';
 import { replayFlowMap } from '../replay/replay.js';
+import { buildGraph } from '../graph/graph.js';
 import { prepareRunDir, writeReport } from '../report/artifact.js';
 import type { RunArtifact } from '../report/types.js';
 import { EFFORT_BUDGETS, type Effort } from './effort.js';
@@ -37,6 +38,9 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
     knownFlows: flows,
   });
 
+  // Cluster every navigation observed this Run into the interaction map (#16).
+  const graph = buildGraph([...replay.transitions, ...exploration.transitions], opts.target);
+
   const artifact: RunArtifact = {
     runId,
     target: opts.target.href,
@@ -47,6 +51,7 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
     flowsDiscovered: exploration.discovered,
     findings: [...replay.findings, ...exploration.findings],
     heals: replay.heals,
+    graph,
   };
   await writeReport(dir, artifact);
   return { artifactDir: dir, artifact };

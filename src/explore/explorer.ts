@@ -4,6 +4,8 @@ import { Agent } from '@cursor/sdk';
 import { chromium } from 'playwright';
 import { addFlow, type FlowMeta } from '../map/flow-map.js';
 import { runFlowScript } from '../replay/replay.js';
+import type { Transition } from '../graph/graph.js';
+import { transitionsFromVisits } from '../graph/record.js';
 import type { ExplorationBudget } from '../run/effort.js';
 import type { Finding } from '../report/types.js';
 import { closeSession } from './hands.js';
@@ -21,6 +23,8 @@ export interface ExploreOptions {
 export interface ExplorationResult {
   discovered: number;
   findings: Finding[];
+  /** Observed navigations from verifying discovered flows (issue #16). */
+  transitions: Transition[];
 }
 
 export interface ProposedFlow {
@@ -60,7 +64,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey) {
     console.warn('exploration skipped: CURSOR_API_KEY not set — run `npx @bonyadnouri/autoend init`');
-    return { discovered: 0, findings: [] };
+    return { discovered: 0, findings: [], transitions: [] };
   }
 
   const workDir = join(opts.runDir, 'explore');
@@ -90,6 +94,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   }
 
   const proposed = collectProposedFlows(reports, opts.knownFlows);
+  const transitions: Transition[] = [];
   let discovered = 0;
   if (proposed.length > 0) {
     const browser = await chromium.launch();
@@ -98,6 +103,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
         const scriptPath = join(workDir, `${flow.id}.mts`);
         await writeFile(scriptPath, flow.script);
         const outcome = await runFlowScript(browser, scriptPath, opts.target, opts.evidenceDir, `discovered-${flow.id}`);
+        transitions.push(...transitionsFromVisits(outcome.visits));
         if (outcome.ok) {
           const now = new Date().toISOString();
           await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
@@ -111,7 +117,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
     }
   }
 
-  return { discovered, findings };
+  return { discovered, findings, transitions };
 }
 
 async function runExplorer(
