@@ -1,8 +1,11 @@
+import { readFile } from 'node:fs/promises';
+import { release } from 'node:os';
 import { listFlows } from '../map/flow-map.js';
 import { explore, type ExplorationResult } from '../explore/explorer.js';
 import { replayFlowMap } from '../replay/replay.js';
+import { join } from 'node:path';
 import { prepareRunDir, writeReport } from '../report/artifact.js';
-import type { RunArtifact } from '../report/types.js';
+import type { Environment, Finding, RunArtifact } from '../report/types.js';
 import { EFFORT_BUDGETS, type Effort } from './effort.js';
 
 export interface RunOptions {
@@ -14,6 +17,27 @@ export interface RunOptions {
 export interface RunOutcome {
   artifactDir: string;
   artifact: RunArtifact;
+}
+
+/**
+ * Suppress (CONTEXT.md): "future Runs stop re-reporting" — drop Advisories
+ * whose title the user suppressed. Other Finding kinds always pass through.
+ */
+export function filterSuppressed(findings: Finding[], suppressed: string[]): Finding[] {
+  return findings.filter((f) => f.kind !== 'advisory' || !suppressed.includes(f.title));
+}
+
+/** Titles from .autoend/suppressed.json; missing or corrupt file means nothing suppressed. */
+async function readSuppressedTitles(repoRoot: string): Promise<string[]> {
+  try {
+    const raw = await readFile(join(repoRoot, '.autoend', 'suppressed.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { advisories?: unknown };
+    return Array.isArray(parsed.advisories)
+      ? parsed.advisories.filter((t): t is string => typeof t === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -55,8 +79,20 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
           detail: `Exploration failed and was skipped: ${message}. Replay results below are still complete.`,
         },
       ],
+      flows: [],
     };
   }
+
+  const pkg = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  ) as { version: string };
+  const environment: Environment = {
+    browser: replay.browserVersion ? `Chromium ${replay.browserVersion}` : 'Chromium (not launched)',
+    viewport: '1280×720',
+    os: `${process.platform} ${release()}`,
+    node: process.version,
+    autoendVersion: pkg.version,
+  };
 
   const artifact: RunArtifact = {
     runId,
@@ -66,7 +102,12 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
     finishedAt: new Date().toISOString(),
     flowsReplayed: replay.replayed,
     flowsDiscovered: exploration.discovered,
-    findings: [...replay.findings, ...exploration.findings],
+    flows: [...replay.flows, ...exploration.flows],
+    environment,
+    findings: filterSuppressed(
+      [...replay.findings, ...exploration.findings],
+      await readSuppressedTitles(opts.repoRoot),
+    ),
     heals: replay.heals,
   };
   await writeReport(dir, artifact);

@@ -4,3 +4,5 @@ dist/
 .autoend/runs/
 .env
 excalidraw.log
+.superpowers/
+.claude/
