@@ -3,10 +3,11 @@
 **Agent-powered end-to-end testing.** Point it at your app, walk away, get back a video-backed report.
 
 ```sh
-npx autoend init    # guided setup — takes a minute
-npx autoend         # agents test your app, a report opens
+npx @bonyadnouri/autoend init    # guided setup — takes a minute
+npx @bonyadnouri/autoend         # agents test your app, a report opens
 ```
 
+Or install once and get the plain `autoend` command: `npm i -g @bonyadnouri/autoend`
 Straight from GitHub also works: `npx github:bonyadnouri/autoend init`
 
 No test suite to write. No selectors to maintain. Agents discover your app's flows, guard them on every run, and hand you the evidence on film.

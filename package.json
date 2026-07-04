@@ -1,5 +1,5 @@
 {
-  "name": "autoend",
+  "name": "@bonyadnouri/autoend",
   "version": "0.1.0",
   "description": "Agent-powered end-to-end testing: initiate a Run, agents test your app, review a video-backed Report.",
   "license": "MIT",
