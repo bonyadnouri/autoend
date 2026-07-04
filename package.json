@@ -28,8 +28,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:viewer",
-    "prepare": "tsc -p tsconfig.json && npm run build:viewer",
+    "build": "npm run build:viewer && tsc -p tsconfig.json",
+    "prepare": "npm run build:viewer && tsc -p tsconfig.json",
     "build:viewer": "tsc -p viewer/tsconfig.json --noEmit && vite build --config viewer/vite.config.ts",
     "dev:viewer": "vite --config viewer/vite.config.ts",
     "dev": "tsx src/cli.ts",
