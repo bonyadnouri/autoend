@@ -1,15 +1,33 @@
 import { createServer, type Server } from 'node:http';
-import { access, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { addFlow, listFlows } from '../src/map/flow-map.js';
-import { replayFlowMap } from '../src/replay/replay.js';
+import { replayFlowMap, runFlowScript } from '../src/replay/replay.js';
 
 const PAGE = `<!doctype html><html><body>
 <button id="btn" onclick="document.getElementById('out').textContent='clicked'">Go</button>
 <div id="out"></div>
 </body></html>`;
+
+// Emits a console error and requests an image that 404s — exercises every capture stream.
+const CAPTURE_PAGE = `<!doctype html><html><body>
+<script>console.error('boom')</script>
+<img src="/missing.png">
+</body></html>`;
+
+const CAPTURE_FLOW = `export default async function flow(page, target) {
+  await page.goto(new URL('/capture', target).href);
+}
+`;
+
+const THROWING_FLOW = `export default async function flow(page, target) {
+  await page.goto(new URL('/capture', target).href);
+  throw new Error('nope');
+}
+`;
 
 // Flow scripts are plain JS-in-.ts so Node's native type stripping always applies.
 const PASSING_FLOW = `export default async function flow(page, target) {
@@ -32,9 +50,13 @@ let target: URL;
 
 beforeAll(async () => {
   repo = await mkdtemp(join(tmpdir(), 'autoend-replay-'));
-  server = createServer((_req, res) => {
+  server = createServer((req, res) => {
+    if (req.url === '/missing.png') {
+      res.writeHead(404).end();
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(PAGE);
+    res.end(req.url === '/capture' ? CAPTURE_PAGE : PAGE);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -76,5 +98,65 @@ describe('replay engine', () => {
     const flows = await listFlows(repo);
     expect(flows.find((f) => f.id === 'click-button')?.lastPassedAt).toBeDefined();
     expect(flows.find((f) => f.id === 'broken-flow')?.lastPassedAt).toBeUndefined();
+  }, 90_000);
+});
+
+describe('flow capture', () => {
+  let browser: Browser;
+
+  beforeAll(async () => {
+    browser = await chromium.launch();
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  it('captures console errors, failed network, timeline, and screenshots', async () => {
+    const scriptPath = join(repo, 'capture-flow.mts');
+    await writeFile(scriptPath, CAPTURE_FLOW);
+    const evidenceDir = join(repo, 'evidence-cap');
+    await mkdir(evidenceDir, { recursive: true });
+
+    const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, 'cap');
+    expect(outcome.ok).toBe(true);
+    expect(outcome.console.some((c) => c.level === 'error' && c.text.includes('boom'))).toBe(true);
+    expect(outcome.network.some((n) => n.status === 404 && n.url.endsWith('/missing.png'))).toBe(true);
+    expect(outcome.timeline[0]).toMatchObject({ label: 'goto /capture', status: 'passed' });
+    expect(outcome.screenshots.map((s) => s.label)).toEqual(['before', 'after']);
+    for (const s of outcome.screenshots) {
+      await expect(access(join(evidenceDir, s.file))).resolves.toBeUndefined();
+    }
+  }, 30_000);
+
+  it('labels the terminal screenshot at-failure and the terminal step failed on a throwing flow', async () => {
+    const scriptPath = join(repo, 'throwing-flow.mts');
+    await writeFile(scriptPath, THROWING_FLOW);
+    const evidenceDir = join(repo, 'evidence-fail');
+    await mkdir(evidenceDir, { recursive: true });
+
+    const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, 'fail');
+    expect(outcome.ok).toBe(false);
+    expect(outcome.screenshots.at(-1)?.label).toBe('at-failure');
+    expect(outcome.timeline.at(-1)).toMatchObject({ status: 'failed' });
+  }, 30_000);
+
+  it('replayFlowMap returns FlowSnapshots and attaches capture to Regression findings', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'autoend-snap-'));
+    const now = new Date().toISOString();
+    await addFlow(repoRoot, { id: 'cap-pass', title: 'Loads the capture page', discoveredAt: now }, CAPTURE_FLOW);
+    await addFlow(repoRoot, { id: 'cap-fail', title: 'Throws after loading', discoveredAt: now }, THROWING_FLOW);
+    const evidenceDir = join(repoRoot, 'evidence');
+    await mkdir(evidenceDir, { recursive: true });
+    const flows = await listFlows(repoRoot);
+
+    const result = await replayFlowMap(repoRoot, target, flows, evidenceDir);
+    expect(result.flows).toHaveLength(2);
+    expect(result.flows.find((f) => f.status === 'failed')).toBeDefined();
+    const regression = result.findings[0];
+    expect(regression.screenshots?.at(-1)?.label).toBe('at-failure');
+    expect(regression.timeline?.length).toBeGreaterThan(0);
+
+    await rm(repoRoot, { recursive: true, force: true });
   }, 90_000);
 });

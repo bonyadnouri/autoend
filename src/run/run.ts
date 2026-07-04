@@ -1,8 +1,10 @@
+import { readFile } from 'node:fs/promises';
+import { release } from 'node:os';
 import { listFlows } from '../map/flow-map.js';
 import { explore } from '../explore/explorer.js';
 import { replayFlowMap } from '../replay/replay.js';
 import { prepareRunDir, writeReport } from '../report/artifact.js';
-import type { RunArtifact } from '../report/types.js';
+import type { Environment, RunArtifact } from '../report/types.js';
 import { EFFORT_BUDGETS, type Effort } from './effort.js';
 
 export interface RunOptions {
@@ -37,6 +39,17 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
     knownFlows: flows,
   });
 
+  const pkg = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  ) as { version: string };
+  const environment: Environment = {
+    browser: replay.browserVersion ? `Chromium ${replay.browserVersion}` : 'Chromium (not launched)',
+    viewport: '1280×720',
+    os: `${process.platform} ${release()}`,
+    node: process.version,
+    autoendVersion: pkg.version,
+  };
+
   const artifact: RunArtifact = {
     runId,
     target: opts.target.href,
@@ -45,6 +58,8 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
     finishedAt: new Date().toISOString(),
     flowsReplayed: replay.replayed,
     flowsDiscovered: exploration.discovered,
+    flows: [...replay.flows, ...exploration.flows],
+    environment,
     findings: [...replay.findings, ...exploration.findings],
     heals: replay.heals,
   };
