@@ -195,6 +195,11 @@ export async function admitProposedFlows(
         });
         if (outcome.ok) {
           const now = new Date().toISOString();
+          // Settle the screens this verified flow visited: framenavigated left
+          // them 'running', so mark them 'discovered' now that the flow passed.
+          for (const screenId of outcome.visitedScreenIds) {
+            await opts.reporter?.screenSeen({ id: screenId, path: screenId, status: 'discovered' });
+          }
           await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
           flowSnapshots.push({
             id: flow.id,

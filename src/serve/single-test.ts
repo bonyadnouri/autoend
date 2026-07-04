@@ -1,12 +1,23 @@
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { listFlows } from '../map/flow-map.js';
 import { publishRun } from '../publish/publish.js';
 import { replayFlowMap } from '../replay/replay.js';
 import { prepareRunDir, writeReport } from '../report/artifact.js';
 import type { RunArtifact } from '../report/types.js';
-import { CompositeReporter, ConsoleReporter, createReporter } from '../stream/index.js';
 import type { RunKind, RunReporter } from '../stream/reporter.js';
 import type { Effort } from '../run/effort.js';
+
+async function autoendVersion(): Promise<string> {
+  try {
+    const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as {
+      version: string;
+    };
+    return pkg.version;
+  } catch {
+    return '0.0.0';
+  }
+}
 
 export interface SingleTestOptions {
   repoRoot: string;
@@ -35,39 +46,39 @@ export async function executeSingleTestRun(opts: SingleTestOptions): Promise<{ a
   });
 
   try {
-  const replay = await replayFlowMap(opts.repoRoot, opts.target, flows, evidenceDir, { reporter: opts.reporter });
+    const replay = await replayFlowMap(opts.repoRoot, opts.target, flows, evidenceDir, { reporter: opts.reporter });
 
-  const artifact: RunArtifact = {
-    runId: opts.runId,
-    target: opts.target.href,
-    effort: opts.effort,
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    flowsReplayed: replay.replayed,
-    flowsDiscovered: 0,
-    flows: replay.flows,
-    environment: {
-      browser: replay.browserVersion ? `Chromium ${replay.browserVersion}` : 'Chromium',
-      viewport: '1280×720',
-      os: process.platform,
-      node: process.version,
-      autoendVersion: '0.0.0',
-    },
-    findings: replay.findings,
-    heals: replay.heals,
-  };
-  await writeReport(dir, artifact);
-  await opts.reporter.runFinished({
-    runId: opts.runId,
-    status: 'finished',
-    flowsReplayed: replay.replayed,
-    flowsDiscovered: 0,
-    findingCounts: replay.findings.reduce<Record<string, number>>((acc, f) => {
-      acc[f.kind] = (acc[f.kind] ?? 0) + 1;
-      return acc;
-    }, {}),
-  });
-  return { artifactDir: dir, artifact };
+    const artifact: RunArtifact = {
+      runId: opts.runId,
+      target: opts.target.href,
+      effort: opts.effort,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      flowsReplayed: replay.replayed,
+      flowsDiscovered: 0,
+      flows: replay.flows,
+      environment: {
+        browser: replay.browserVersion ? `Chromium ${replay.browserVersion}` : 'Chromium',
+        viewport: '1280×720',
+        os: process.platform,
+        node: process.version,
+        autoendVersion: await autoendVersion(),
+      },
+      findings: replay.findings,
+      heals: replay.heals,
+    };
+    await writeReport(dir, artifact);
+    await opts.reporter.runFinished({
+      runId: opts.runId,
+      status: 'finished',
+      flowsReplayed: replay.replayed,
+      flowsDiscovered: 0,
+      findingCounts: replay.findings.reduce<Record<string, number>>((acc, f) => {
+        acc[f.kind] = (acc[f.kind] ?? 0) + 1;
+        return acc;
+      }, {}),
+    });
+    return { artifactDir: dir, artifact };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await opts.reporter.runFinished({ runId: opts.runId, status: 'failed', error: message });

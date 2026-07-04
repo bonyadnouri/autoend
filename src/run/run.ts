@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { resolveModel } from '../agents/harness.js';
-import { loadConfig } from '../config.js';
 import { listFlows } from '../map/flow-map.js';
 import { exploreDeep } from '../explore/deep.js';
 import { explore, type ExplorationResult } from '../explore/explorer.js';
@@ -10,7 +9,7 @@ import { replayFlowMap } from '../replay/replay.js';
 import { join } from 'node:path';
 import { prepareRunDir, writeReport } from '../report/artifact.js';
 import type { Environment, Finding, RunArtifact } from '../report/types.js';
-import { createReporter, type RunKind, type RunReporter } from '../stream/index.js';
+import { NoopReporter, type RunKind, type RunReporter } from '../stream/index.js';
 import { triageFindings } from '../triage/triage.js';
 import { verifyCandidates } from '../verify/verifier.js';
 import { EFFORT_PIPELINES, type Effort } from './effort.js';
@@ -65,10 +64,10 @@ async function readSuppressedTitles(repoRoot: string): Promise<string[]> {
 export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
   const startedAt = new Date().toISOString();
   const runId = opts.runId ?? startedAt.replace(/[:.]/g, '-');
-  const config = await loadConfig(opts.repoRoot);
-  const reporter =
-    opts.reporter ??
-    createReporter({ runId, analysisId: config?.analysisId, console: false, supabase: true });
+  // Default to no-op: only the daemon (which streams under an analysis Lumen
+  // already created) passes a live reporter. A plain CLI run stays offline and
+  // publishes once at the end — no premature FK-violating row writes.
+  const reporter = opts.reporter ?? NoopReporter;
   const { dir, evidenceDir } = await prepareRunDir(opts.repoRoot, runId);
 
   let runFailed = false;

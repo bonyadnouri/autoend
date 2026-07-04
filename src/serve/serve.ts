@@ -7,7 +7,7 @@ import { isEffort, type Effort } from '../run/effort.js';
 import { executeRun } from '../run/run.js';
 import { CompositeReporter, ConsoleReporter, createReporter } from '../stream/index.js';
 import { executeSingleTestRun, publishSingleTestArtifact } from './single-test.js';
-import { SupabaseQueue, type RunRequest } from './queue.js';
+import { SupabaseQueue, type RunQueue, type RunRequest } from './queue.js';
 
 const POLL_MS = 5_000;
 
@@ -28,20 +28,18 @@ async function resolveEffort(request: RunRequest, repoRoot: string): Promise<Eff
   return config?.effort ?? 'mid';
 }
 
-async function processRun(request: RunRequest, repoRoot: string): Promise<void> {
-  const target = await resolveTarget(request, repoRoot);
-  const effort = await resolveEffort(request, repoRoot);
-  const config = await loadConfig(repoRoot);
-  const streamReporter = createReporter({
-    runId: request.runId,
-    analysisId: request.analysisId ?? config?.analysisId,
-    console: false,
-  });
-  const reporter = new CompositeReporter([new ConsoleReporter(), streamReporter]);
-
-  let failed = false;
-  let errorMessage: string | undefined;
+async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue): Promise<void> {
   try {
+    const target = await resolveTarget(request, repoRoot);
+    const effort = await resolveEffort(request, repoRoot);
+    const config = await loadConfig(repoRoot);
+    const streamReporter = createReporter({
+      runId: request.runId,
+      analysisId: request.analysisId ?? config?.analysisId,
+      console: false,
+    });
+    const reporter = new CompositeReporter([new ConsoleReporter(), streamReporter]);
+
     if (request.kind === 'single-test') {
       if (!request.testId) throw new Error('single-test run missing test_id');
       const { artifactDir, artifact } = await executeSingleTestRun({
@@ -66,9 +64,12 @@ async function processRun(request: RunRequest, repoRoot: string): Promise<void> 
       await publishRun(artifact, join(artifactDir, 'evidence'));
     }
   } catch (error) {
-    failed = true;
-    errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(pc.red(`run ${request.runId} failed: ${errorMessage}`));
+    // Backstop: the reporter marks the run failed when the failure is inside a
+    // run, but errors before/around it (resolveTarget, reporter setup) would
+    // otherwise leave the claimed row stuck 'running'.
+    await queue.markFailed(request.runId, errorMessage).catch(() => {});
   }
 }
 
@@ -92,8 +93,13 @@ export async function runServe(opts: ServeOptions): Promise<never> {
     if (busy) return;
     busy = true;
     try {
-      const request = await queue.claimNext();
-      if (request) await processRun(request, opts.repoRoot);
+      // Drain: keep claiming until the queue is empty, so a run queued while
+      // another was executing isn't stranded until the next poll.
+      let request = await queue.claimNext();
+      while (request) {
+        await processRun(request, opts.repoRoot, queue);
+        request = await queue.claimNext();
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(pc.yellow(`daemon tick failed: ${message}`));

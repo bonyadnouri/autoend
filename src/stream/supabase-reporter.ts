@@ -92,27 +92,35 @@ export class SupabaseReporter implements RunReporter {
   async screenSeen(screen: ScreenFact): Promise<void> {
     this.enqueue(async () => {
       const name = screen.title ?? screenTitle(screen.path);
-      const { error } = await this.supabase.from('screens').upsert(
-        {
-          analysis_id: this.analysisId,
-          id: screen.id,
-          name,
-          type: screenType(screen.path),
-          description: `Discovered at ${screen.path}`,
-          position: { x: 0, y: 0 },
-          status: screen.status,
-          is_entry_point: screen.path === '/',
-          accent: SCREEN_ACCENT,
-          elements: [],
-          navigation: [],
-          expected_actions: [],
-          test_case_ids: [],
-          issue_ids: [],
-          last_run_id: this.runId,
-        },
-        { onConflict: 'analysis_id,id' },
-      );
-      if (error) throw error;
+      // Update-first so repeat visits and re-runs never clobber a screen's
+      // stored layout position (upsert would rewrite position back to 0,0).
+      const { data: updated, error: updateError } = await this.supabase
+        .from('screens')
+        .update({ name, status: screen.status, last_run_id: this.runId })
+        .eq('analysis_id', this.analysisId)
+        .eq('id', screen.id)
+        .select('id');
+      if (updateError) throw updateError;
+      if (updated && updated.length > 0) return;
+
+      const { error: insertError } = await this.supabase.from('screens').insert({
+        analysis_id: this.analysisId,
+        id: screen.id,
+        name,
+        type: screenType(screen.path),
+        description: `Discovered at ${screen.path}`,
+        position: { x: 0, y: 0 },
+        status: screen.status,
+        is_entry_point: screen.path === '/',
+        accent: SCREEN_ACCENT,
+        elements: [],
+        navigation: [],
+        expected_actions: [],
+        test_case_ids: [],
+        issue_ids: [],
+        last_run_id: this.runId,
+      });
+      if (insertError) throw insertError;
     });
   }
 

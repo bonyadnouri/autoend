@@ -28,7 +28,7 @@
     "dist"
   ],
   "exports": {
-    ".": "./dist/cli.js",
+    ".": "./dist/index.js",
     "./run": "./dist/run/run.js",
     "./stream": "./dist/stream/index.js"
   },
