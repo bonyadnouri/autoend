@@ -104,13 +104,13 @@ export async function runSetupWizard(repoRoot: string): Promise<void> {
       publishing = true;
       p.log.success('Saved to .env — Runs will publish to your dashboard.');
     } else {
-      const keyName = await p.select<'SUPABASE_SERVICE_ROLE_KEY' | 'SUPABASE_ANON_KEY'>({
+      const keyName = await p.select<'SUPABASE_ANON_KEY' | 'SUPABASE_SERVICE_ROLE_KEY'>({
         message: 'Which Supabase key will you paste?',
         options: [
-          { value: 'SUPABASE_SERVICE_ROLE_KEY', label: 'service-role (recommended)', hint: 'needed to upload evidence video to Storage' },
-          { value: 'SUPABASE_ANON_KEY', label: 'anon / publishable', hint: 'table writes only — no hosted video' },
+          { value: 'SUPABASE_ANON_KEY', label: 'anon / publishable (recommended)', hint: 'tables + evidence upload, once migration 002 is applied' },
+          { value: 'SUPABASE_SERVICE_ROLE_KEY', label: 'service-role', hint: 'also works; higher blast radius if leaked' },
         ],
-        initialValue: 'SUPABASE_SERVICE_ROLE_KEY',
+        initialValue: 'SUPABASE_ANON_KEY',
       });
       bail(keyName);
       const key = await p.password({

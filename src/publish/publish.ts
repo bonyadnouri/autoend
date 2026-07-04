@@ -53,6 +53,22 @@ function testStatus(status: FlowSnapshot['status']): TestRow['status'] {
   return 'not-executed';
 }
 
+/**
+ * The `tests` row a Finding hangs its Evidence off in the Lumen UI. Regressions
+ * reuse their Flow's id (the flow is already a test); Findings with no Flow
+ * (Defects, explorer hard-failures/advisories) fall back to their own id, and
+ * get a synthetic test row so their video is reachable (issue -> test ->
+ * investigation is the only path the UI renders video through).
+ */
+function subjectId(finding: Finding): string {
+  return finding.flowId ?? finding.id;
+}
+
+/** A non-advisory Finding without a Flow reads as a failed test in the UI. */
+function findingTestStatus(kind: Finding['kind']): TestRow['status'] {
+  return kind === 'advisory' ? 'not-executed' : 'fail';
+}
+
 function severity(kind: Finding['kind']): IssueRow['severity'] {
   if (kind === 'hard-failure') return 'critical';
   // A defect is a Verifier-reproduced semantic bug (ADR-0008) — as actionable
@@ -95,8 +111,9 @@ function evidenceUrl(urls: Map<string, string>, file: string | undefined): strin
   return urls.get(file) ?? urls.get(basename(file)) ?? null;
 }
 
-function buildTests(artifact: RunArtifact, investigatedFlowIds: Set<string>): TestRow[] {
-  return artifact.flows.map((flow) => {
+function buildTests(artifact: RunArtifact, investigatedIds: Set<string>): TestRow[] {
+  const flowIds = new Set(artifact.flows.map((flow) => flow.id));
+  const tests: TestRow[] = artifact.flows.map((flow) => {
     const related = artifact.findings.filter((f) => f.flowId === flow.id);
     return {
       id: flow.id,
@@ -119,9 +136,35 @@ function buildTests(artifact: RunArtifact, investigatedFlowIds: Set<string>): Te
       status: testStatus(flow.status),
       duration_ms: flow.durationMs ?? 0,
       related_issue_ids: related.map((f) => f.id),
-      has_investigation: investigatedFlowIds.has(flow.id),
+      has_investigation: investigatedIds.has(flow.id),
     };
   });
+
+  // Synthetic test per Flow-less Finding that carries detail, so its Evidence
+  // is reachable in the UI (issue -> related test -> investigation -> video).
+  for (const finding of artifact.findings) {
+    const sid = subjectId(finding);
+    if (flowIds.has(sid) || !findingHasDetail(finding)) continue;
+    tests.push({
+      id: sid,
+      analysis_id: ANALYSIS_ID,
+      name: finding.title,
+      journey_id: '',
+      screen_ids: [],
+      preconditions: [],
+      steps: (finding.timeline ?? []).map((step) => ({
+        action: step.label,
+        expected: step.status === 'passed' ? 'Step succeeds' : 'Step fails',
+      })),
+      expected_result: finding.expectation?.statement ?? 'Behavior matches expectations',
+      actual_result: finding.detail,
+      status: findingTestStatus(finding.kind),
+      duration_ms: 0,
+      related_issue_ids: [finding.id],
+      has_investigation: investigatedIds.has(sid),
+    });
+  }
+  return tests;
 }
 
 function buildIssues(artifact: RunArtifact): IssueRow[] {
@@ -134,21 +177,20 @@ function buildIssues(artifact: RunArtifact): IssueRow[] {
     related_screen_id: '',
     related_journey_id: null,
     suggested_fix: finding.diagnosis?.rootCause ?? '',
-    related_test_ids: finding.flowId ? [finding.flowId] : [],
+    related_test_ids: [subjectId(finding)],
     status: 'open',
   }));
 }
 
 /** Does this Finding carry enough runtime detail to warrant an investigation payload? */
-function hasDetail(finding: Finding): boolean {
+function findingHasDetail(finding: Finding): boolean {
   return Boolean(
-    finding.flowId &&
-      (finding.evidence ||
-        finding.diagnosis ||
-        finding.console?.length ||
-        finding.network?.length ||
-        finding.timeline?.length ||
-        finding.screenshots?.length),
+    finding.evidence ||
+      finding.diagnosis ||
+      finding.console?.length ||
+      finding.network?.length ||
+      finding.timeline?.length ||
+      finding.screenshots?.length,
   );
 }
 
@@ -160,13 +202,14 @@ function buildInvestigations(
   const byFlow = new Map<string, InvestigationRow>();
 
   for (const finding of artifact.findings) {
-    if (!hasDetail(finding) || !finding.flowId) continue;
-    const flow = flowsById.get(finding.flowId);
+    if (!findingHasDetail(finding)) continue;
+    const sid = subjectId(finding);
+    const flow = finding.flowId ? flowsById.get(finding.flowId) : undefined;
     const videoUrl =
       evidenceUrl(urls, finding.evidence) ?? evidenceUrl(urls, flow?.evidence) ?? null;
 
     const payload = {
-      testId: finding.flowId,
+      testId: sid,
       recordedReason: finding.title,
       analysis: finding.diagnosis
         ? {
@@ -223,10 +266,11 @@ function buildInvestigations(
       },
     };
 
-    // One investigation per flow (composite PK) — the last detailed Finding wins.
-    byFlow.set(finding.flowId, {
+    // One investigation per subject (composite PK) — the last detailed Finding
+    // for a given subject wins (only collides when several share a flowId).
+    byFlow.set(sid, {
       analysis_id: ANALYSIS_ID,
-      test_id: finding.flowId,
+      test_id: sid,
       payload,
     });
   }
@@ -310,6 +354,32 @@ function throwOnError(context: string, error: { message: string } | null): void 
 }
 
 /**
+ * Replace this analysis's rows in `table` with `rows`, atomically-enough
+ * without a transaction: upsert the fresh rows FIRST, then delete only the
+ * stale ones (same analysis, id no longer present). Upserting before deleting
+ * means a mid-publish failure leaves the previous Run's data intact rather than
+ * an emptied analysis — the delete-then-insert order did the opposite.
+ */
+async function replaceRows(
+  supabase: SupabaseClient,
+  table: string,
+  idColumn: string,
+  rows: Array<Record<string, unknown>>,
+): Promise<void> {
+  if (rows.length > 0) {
+    throwOnError(
+      `upsert ${table}`,
+      (await supabase.from(table).upsert(rows, { onConflict: `analysis_id,${idColumn}` })).error,
+    );
+  }
+  const keepIds = rows.map((row) => String(row[idColumn]));
+  const pruneAll = supabase.from(table).delete().eq('analysis_id', ANALYSIS_ID);
+  const prune =
+    keepIds.length > 0 ? pruneAll.not(idColumn, 'in', `(${keepIds.join(',')})`) : pruneAll;
+  throwOnError(`prune ${table}`, (await prune).error);
+}
+
+/**
  * Publish a Run's results to the Lumen Supabase. Write order matters:
  * evidence -> children (tests/issues/investigations) -> analyses summary LAST,
  * so `analyses.analyzed_at` acts as the atomic "run fully published" marker and
@@ -325,36 +395,17 @@ export async function publishRun(
   const urls = await uploadEvidence(supabase, artifact.runId, evidenceDir);
 
   const investigations = buildInvestigations(artifact, urls);
-  const investigatedFlowIds = new Set(investigations.map((row) => row.test_id));
-  const tests = buildTests(artifact, investigatedFlowIds);
+  const investigatedIds = new Set(investigations.map((row) => row.test_id));
+  const tests = buildTests(artifact, investigatedIds);
   const issues = buildIssues(artifact);
 
-  // Clear the previous Run's results for this analysis before inserting fresh.
-  throwOnError(
-    'clear investigations',
-    (await supabase.from('investigations').delete().eq('analysis_id', ANALYSIS_ID)).error,
-  );
-  throwOnError(
-    'clear tests',
-    (await supabase.from('tests').delete().eq('analysis_id', ANALYSIS_ID)).error,
-  );
-  throwOnError(
-    'clear issues',
-    (await supabase.from('issues').delete().eq('analysis_id', ANALYSIS_ID)).error,
-  );
-
-  if (tests.length > 0) {
-    throwOnError('insert tests', (await supabase.from('tests').insert(tests)).error);
-  }
-  if (issues.length > 0) {
-    throwOnError('insert issues', (await supabase.from('issues').insert(issues)).error);
-  }
-  if (investigations.length > 0) {
-    throwOnError(
-      'insert investigations',
-      (await supabase.from('investigations').insert(investigations)).error,
-    );
-  }
+  // Upsert fresh rows, then prune the previous Run's stale ones. Order matters:
+  // new data lands before old data leaves, so a failure never empties the run.
+  const asRows = <T>(rows: T[]): Array<Record<string, unknown>> =>
+    rows as unknown as Array<Record<string, unknown>>;
+  await replaceRows(supabase, 'tests', 'id', asRows(tests));
+  await replaceRows(supabase, 'issues', 'id', asRows(issues));
+  await replaceRows(supabase, 'investigations', 'test_id', asRows(investigations));
 
   // Commit marker: write the summary last so the UI flips to this Run atomically.
   const summary = buildSummary(artifact);

@@ -78,7 +78,7 @@ $ npx @bonyadnouri/autoend init
 ◆ How hard should a Run test by default?  mid — everyday runs · ~2-3 min
 ◆ Cursor API key                        ✓ saved to .env
 ◆ Supabase URL (Enter to skip publishing)  https://your-project.supabase.co
-◆ Which Supabase key will you paste?    service-role (recommended)
+◆ Which Supabase key will you paste?    anon / publishable (recommended)
 ◆ Supabase key                          ✓ saved to .env
 ```
 
@@ -119,11 +119,21 @@ A Run publishes its results to the Supabase project behind the Lumen dashboard. 
 
 ```sh
 SUPABASE_URL=https://your-project.supabase.co
-# Preferred: the service-role key — needed to upload evidence video to Storage.
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-# Or, for table writes only (no evidence upload), the anon key:
-# SUPABASE_ANON_KEY=your-anon-key
+# Preferred: the anon / publishable key — the Lumen tables allow anon writes and
+# the evidence bucket is provisioned with anon upload policies (migration below).
+SUPABASE_ANON_KEY=your-anon-key
+# A service-role key also works, but it's higher blast radius if leaked:
+# SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 ```
+
+Apply the Lumen SQL migrations to the project first, including
+[`002_evidence_bucket.sql`](../lumen/supabase/migrations/002_evidence_bucket.sql),
+which creates the public `evidence` bucket and its anon upload/read policies.
+
+> **Security:** the `evidence` bucket is **public** — uploaded WebM video and
+> screenshots of your app are world-readable at a guessable URL. Point autoend
+> at environments where that's acceptable (localhost, staging with test data),
+> never production with real user data.
 
 When set, each Run:
 

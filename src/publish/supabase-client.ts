@@ -22,13 +22,21 @@ interface SupabaseCredentials {
 }
 
 /**
- * Table writes work with the open-RLS `anon` key, but Storage bucket
- * creation/upload needs elevated rights — prefer the service-role key when
- * present. autoend is a server-side CLI (never a browser), so this is safe.
+ * Publishing uses the open-RLS `anon` key: the Lumen tables allow anon writes,
+ * and the `evidence` bucket is provisioned public with anon upload/read policies
+ * (lumen/supabase/migrations/002_evidence_bucket.sql), so no elevated key is
+ * required. A service-role key is still accepted as a fallback for setups that
+ * only configured that one, but it is no longer preferred — running with the
+ * least-privileged key that works keeps a leaked/committed key low-blast-radius.
+ *
+ * SECURITY NOTE: the evidence bucket is PUBLIC — uploaded WebM video and
+ * screenshots of the Target are world-readable at a guessable URL. Point
+ * autoend at environments where that exposure is acceptable (localhost,
+ * staging with test data), never production with real user data.
  */
 export function supabaseCredentials(): SupabaseCredentials | null {
   const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY;
+  const key = process.env.SUPABASE_ANON_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return null;
   return { url, key };
 }
