@@ -12,6 +12,10 @@ npx @bonyadnouri/autoend         # agents test your app, a report opens
 
 ![autoend report overview showing a hard failure verdict with tiered findings and a heal to verify](docs/assets/viewer-overview.png)
 
+## Related projects
+
+- **[lumen](https://github.com/an2323/lumen)** — React dashboard for viewing Run results (tests, issues, investigations).
+
 ## What is autoend?
 
 autoend is **not a test framework** — you never write a test. It's an autonomous testing fleet with a memory:
