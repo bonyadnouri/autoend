@@ -5,3 +5,4 @@ dist/
 .env
 excalidraw.log
 .superpowers/
+.claude/
