@@ -101,7 +101,7 @@ export function FindingDetails() {
 
         <div className="space-y-6">
           <section className="card p-5">
-            <span className="section-title">Details</span>
+            <span className="section-title">Metadata</span>
             <dl className="mt-3 space-y-2.5 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-slate-500">Kind</dt>

@@ -1,12 +1,7 @@
 import { Stethoscope, Crosshair, Cpu } from "lucide-react";
 import type { Diagnosis, FaultDomain } from "../../types";
+import { FAULT_LABEL } from "../../data/helpers";
 import { ConfidenceMeter } from "./ConfidenceMeter";
-
-const domainLabel: Record<FaultDomain, string> = {
-  app: "App",
-  flow: "Flow",
-  environment: "Environment",
-};
 
 const domainTone: Record<FaultDomain, string> = {
   app: "bg-sky-100 text-sky-700",
@@ -22,7 +17,7 @@ export function FailureAnalysisCard({ diagnosis }: { diagnosis: Diagnosis }) {
         <h2 className="text-sm font-semibold text-status-ai">Diagnosis</h2>
         <span className={`pill ml-auto ${domainTone[diagnosis.faultDomain]}`}>
           <Cpu size={13} />
-          {domainLabel[diagnosis.faultDomain]} fault
+          {FAULT_LABEL[diagnosis.faultDomain]} fault
         </span>
       </div>
 

@@ -3,18 +3,12 @@ import { Video } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { KindBadge } from "../components/StatusBadge";
 import { useReport } from "../data/report";
-import type { FindingKind } from "../types";
-
-const tierRank: Record<FindingKind, number> = {
-  "hard-failure": 0,
-  regression: 1,
-  advisory: 2,
-};
+import { TIER_RANK } from "../data/helpers";
 
 export function Findings() {
   const { artifact } = useReport();
-  const findings = [...artifact.findings].sort((a, b) => tierRank[a.kind] - tierRank[b.kind]);
-  const flowTitle = (flowId?: string) =>
+  const findings = [...artifact.findings].sort((a, b) => TIER_RANK[a.kind] - TIER_RANK[b.kind]);
+  const lookupFlow = (flowId?: string) =>
     flowId ? artifact.flows.find((f) => f.id === flowId) : undefined;
 
   return (
@@ -44,7 +38,7 @@ export function Findings() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {findings.map((f) => {
-                  const flow = flowTitle(f.flowId);
+                  const flow = lookupFlow(f.flowId);
                   return (
                     <tr key={f.id} className="hover:bg-slate-50">
                       <td className="px-4 py-3 align-top">

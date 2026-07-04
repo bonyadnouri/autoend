@@ -1,4 +1,4 @@
-import type { FindingKind } from "../types";
+import type { FaultDomain, FindingKind } from "../types";
 
 export const KIND_LABEL: Record<FindingKind, string> = {
   "hard-failure": "Hard Failure",
@@ -13,10 +13,26 @@ export const KIND_TONE: Record<FindingKind, "fail" | "warn" | "ai"> = {
   advisory: "ai",
 };
 
+/** Finding tier sort order (CONTEXT.md tiers) shared by Overview / Findings. */
+export const TIER_RANK: Record<FindingKind, number> = {
+  "hard-failure": 0,
+  regression: 1,
+  advisory: 2,
+};
+
+/** Fault domain → display label shared by FailureAnalysisCard / ExportMenu. */
+export const FAULT_LABEL: Record<FaultDomain, string> = {
+  app: "App",
+  flow: "Flow",
+  environment: "Environment",
+};
+
 export function formatDuration(ms: number): string {
   if (ms <= 0) return "-";
   if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(2)} s`;
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 export function formatDateTime(iso: string): string {

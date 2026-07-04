@@ -13,14 +13,7 @@ import { MetricCard } from "../components/MetricCard";
 import { KindBadge } from "../components/StatusBadge";
 import { ResolutionActions } from "../components/ResolutionActions";
 import { useReport } from "../data/report";
-import { formatDateTime, formatDuration } from "../data/helpers";
-import type { FindingKind } from "../types";
-
-const tierRank: Record<FindingKind, number> = {
-  "hard-failure": 0,
-  regression: 1,
-  advisory: 2,
-};
+import { formatDateTime, formatDuration, TIER_RANK } from "../data/helpers";
 
 export function Overview() {
   const { artifact } = useReport();
@@ -37,7 +30,7 @@ export function Overview() {
 
   const env = artifact.environment;
   const topFindings = [...artifact.findings]
-    .sort((a, b) => tierRank[a.kind] - tierRank[b.kind])
+    .sort((a, b) => TIER_RANK[a.kind] - TIER_RANK[b.kind])
     .slice(0, 5);
 
   return (

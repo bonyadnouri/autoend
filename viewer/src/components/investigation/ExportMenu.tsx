@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, ChevronDown, FileJson, ClipboardCopy, Check } from "lucide-react";
-import type { Environment, FaultDomain, Finding } from "../../types";
-import { KIND_LABEL } from "../../data/helpers";
+import type { Environment, Finding } from "../../types";
+import { FAULT_LABEL, KIND_LABEL } from "../../data/helpers";
 
 interface Props {
   finding: Finding;
@@ -9,12 +9,6 @@ interface Props {
   target: string;
   environment: Environment;
 }
-
-const faultLabel: Record<FaultDomain, string> = {
-  app: "App",
-  flow: "Flow",
-  environment: "Environment",
-};
 
 /** The portable Finding export: the whole Finding, wrapped with its Run provenance. */
 function buildReport(finding: Finding, runId: string, target: string) {
@@ -34,7 +28,7 @@ function buildTextSummary(finding: Finding, env: Environment): string {
   if (d) {
     lines.push(
       "",
-      `**Diagnosis:** ${d.rootCause} — ${faultLabel[d.faultDomain]} fault, ${d.confidence}% confidence`,
+      `**Diagnosis:** ${d.rootCause} — ${FAULT_LABEL[d.faultDomain]} fault, ${d.confidence}% confidence`,
     );
   }
 

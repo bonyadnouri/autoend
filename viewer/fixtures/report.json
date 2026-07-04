@@ -8,7 +8,7 @@
   "flowsDiscovered": 1,
   "environment": {
     "browser": "Chromium 130.0.6723.58",
-    "viewport": "1280x720",
+    "viewport": "1280×720",
     "os": "macOS 15.5 (arm64)",
     "node": "v23.6.0",
     "autoendVersion": "0.1.1"

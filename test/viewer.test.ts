@@ -12,9 +12,9 @@ import { filterSuppressed } from '../src/run/run.js';
 import { serveReport } from '../src/viewer/server.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const VIEWER_DIST = join(ROOT, 'dist', 'viewer');
+const VIEWER_DIST = join(ROOT, 'dist', 'spa');
 
-// Build the lumen viewer bundle once if absent — the server under test serves it.
+// Build the lumen viewer bundle (dist/spa) once if absent — the server under test serves it.
 beforeAll(() => {
   if (!existsSync(join(VIEWER_DIST, 'index.html'))) {
     execSync('npm run build:viewer', { cwd: ROOT, stdio: 'inherit' });
@@ -128,9 +128,14 @@ describe('static viewer', () => {
     expect(res.headers.get('content-type')).toContain('text/javascript');
   });
 
-  it('rejects paths that escape dist/viewer', async () => {
+  it('rejects paths that escape the SPA root', async () => {
     const { url } = await startViewer(true);
     expect([400, 404]).toContain(await rawStatus(url, '/assets/../../package.json'));
+  });
+
+  it('does not serve the compiled server bundle from the SPA root', async () => {
+    const { url } = await startViewer(true);
+    expect(await rawStatus(url, '/server.js')).toBe(404);
   });
 });
 

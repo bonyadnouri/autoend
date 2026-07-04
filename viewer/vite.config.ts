@@ -61,5 +61,5 @@ export default defineConfig({
   root: __dirname,
   base: './',
   plugins: [react(), fixtureReport()],
-  build: { outDir: '../dist/viewer', emptyOutDir: true },
+  build: { outDir: '../dist/spa', emptyOutDir: true },
 });

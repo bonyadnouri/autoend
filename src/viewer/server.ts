@@ -8,7 +8,7 @@ import { readRunArtifact, updateFinding } from '../report/artifact.js';
 
 /**
  * The thin viewer over a Run artifact (ADR-0004): serves the built lumen
- * viewer (dist/viewer) plus the artifact's files. Resolution actions
+ * viewer (dist/spa) plus the artifact's files. Resolution actions
  * (Dismiss / Reject / Suppress — one per Finding tier) are plain file edits
  * against the repo's Flow Map; they only work when a repoRoot is provided
  * (the Report is portable, the Flow Map is not). This server must stay dumb:
@@ -19,8 +19,8 @@ export interface Viewer {
   server: Server;
 }
 
-/** dist/viewer sits at the package root beside src/ and dist/ — this resolves identically from both. */
-const VIEWER_DIST = fileURLToPath(new URL('../../dist/viewer/', import.meta.url));
+/** dist/spa sits at the package root beside src/ and dist/ — this resolves identically from both. */
+const VIEWER_DIST = fileURLToPath(new URL('../../dist/spa/', import.meta.url));
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -128,6 +128,7 @@ async function resolveFinding(
   res: ServerResponse,
 ): Promise<void> {
   if (action === 'reject') {
+    // TODO: design the :id semantics for Reject — Heals are not Findings and the UI currently sends heal.flowId — when Heal production lands (ADR-0006 follow-up).
     sendJson(res, 501, { error: 'Reject requires Heals, which are not produced yet (ADR-0006 follow-up)' });
     return;
   }
@@ -186,7 +187,7 @@ export function serveReport(artifactDir: string, port = 0, repoRoot?: string): P
         await resolveFinding(artifactDir, repoRoot, id, match[2] as 'dismiss' | 'suppress' | 'reject', res);
       } else if (req.method === 'GET') {
         // The built viewer: `/` is index.html (hash routing — no history
-        // fallback needed), everything else resolves inside dist/viewer.
+        // fallback needed), everything else resolves inside dist/spa.
         const decoded = decodePath(url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
         const rel = decoded === null ? null : normalize(decoded);
         if (rel === null || rel.startsWith('..') || isAbsolute(rel)) {
