@@ -152,6 +152,33 @@ describe('report and evidence', () => {
     expect(png.status).toBe(200);
     expect(png.headers.get('content-type')).toBe('image/png');
   });
+
+  // Chrome refuses to seek a <video> served without byte ranges — the click-timeline-to-seek
+  // feature needs 206 responses from this production server, not just the dev middleware.
+  it('serves a 206 partial for a valid Range', async () => {
+    const { url } = await startViewer(true);
+    const res = await fetch(new URL('evidence/clip.webm', url), { headers: { Range: 'bytes=0-3' } });
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe('bytes 0-3/10');
+    expect(res.headers.get('content-length')).toBe('4');
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    expect(await res.text()).toBe('webm'); // first 4 bytes of 'webm-bytes'
+  });
+
+  it('416s an unsatisfiable Range', async () => {
+    const { url } = await startViewer(true);
+    const res = await fetch(new URL('evidence/clip.webm', url), { headers: { Range: 'bytes=10-' } });
+    expect(res.status).toBe(416);
+    expect(res.headers.get('content-range')).toBe('bytes */10');
+  });
+
+  it('serves the full body with 200 and advertises byte ranges when no Range is sent', async () => {
+    const { url } = await startViewer(true);
+    const res = await fetch(new URL('evidence/clip.webm', url));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    expect(await res.text()).toBe('webm-bytes');
+  });
 });
 
 describe('capabilities', () => {

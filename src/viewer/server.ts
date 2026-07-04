@@ -1,5 +1,6 @@
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { extname, isAbsolute, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { removeFlow } from '../map/flow-map.js';
@@ -50,6 +51,42 @@ async function sendFile(res: ServerResponse, path: string): Promise<void> {
   }
   res.writeHead(200, { 'content-type': CONTENT_TYPES[extname(path)] ?? 'application/octet-stream' });
   res.end(data);
+}
+
+/**
+ * Serve an Evidence file with HTTP Range support so Chrome can seek a <video>
+ * (it refuses to seek a source served without byte ranges). Streams only the
+ * requested slice; mirrors the dev middleware in viewer/vite.config.ts.
+ */
+async function sendEvidence(res: ServerResponse, path: string, rangeHeader?: string): Promise<void> {
+  let size: number;
+  try {
+    ({ size } = await stat(path));
+  } catch {
+    sendStatus(res, 404);
+    return;
+  }
+  const type = CONTENT_TYPES[extname(path)] ?? 'application/octet-stream';
+  const range = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader ?? '');
+  if (range) {
+    const start = Number(range[1]);
+    const end = range[2] === '' ? size - 1 : Math.min(Number(range[2]), size - 1);
+    if (start > end || start >= size) {
+      res.writeHead(416, { 'content-range': `bytes */${size}` });
+      res.end();
+      return;
+    }
+    res.writeHead(206, {
+      'content-type': type,
+      'accept-ranges': 'bytes',
+      'content-range': `bytes ${start}-${end}/${size}`,
+      'content-length': end - start + 1,
+    });
+    createReadStream(path, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { 'content-type': type, 'accept-ranges': 'bytes', 'content-length': size });
+  createReadStream(path).pipe(res);
 }
 
 /** decodeURIComponent that reports malformed input instead of throwing. */
@@ -138,7 +175,7 @@ export function serveReport(artifactDir: string, port = 0, repoRoot?: string): P
           sendStatus(res, 400);
           return;
         }
-        await sendFile(res, join(artifactDir, 'evidence', name));
+        await sendEvidence(res, join(artifactDir, 'evidence', name), req.headers.range);
       } else if (req.method === 'POST') {
         const match = /^\/api\/findings\/([^/]+)\/(dismiss|suppress|reject)$/.exec(url.pathname);
         const id = match && decodePath(match[1]);
