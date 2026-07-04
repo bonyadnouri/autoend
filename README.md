@@ -10,7 +10,7 @@ npx @bonyadnouri/autoend init    # guided setup — takes a minute
 npx @bonyadnouri/autoend         # agents test your app, a report opens
 ```
 
-![autoend report showing a hard failure verdict with tiered findings](docs/assets/report-failure.png)
+![autoend report overview showing a hard failure verdict with tiered findings and a heal to verify](docs/assets/viewer-overview.png)
 
 ## What is autoend?
 
@@ -102,7 +102,7 @@ A browser tab opens with the verdict up top and findings below, sorted by how mu
 
 Every finding carries a video. Watch it before you read another line of logs.
 
-![autoend report showing the all clear state](docs/assets/report-all-clear.png)
+![autoend report showing the all clear state](docs/assets/viewer-all-clear.png)
 
 ### 4. Choose your effort
 

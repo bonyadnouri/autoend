@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 import { addFlow, type FlowMeta } from '../map/flow-map.js';
 import { runFlowScript } from '../replay/replay.js';
 import type { ExplorationBudget } from '../run/effort.js';
-import type { Finding } from '../report/types.js';
+import type { Finding, FlowSnapshot } from '../report/types.js';
 import { closeSession } from './hands.js';
 
 export interface ExploreOptions {
@@ -21,6 +21,8 @@ export interface ExploreOptions {
 export interface ExplorationResult {
   discovered: number;
   findings: Finding[];
+  /** A snapshot per newly discovered Flow — the Report's receipts (CONTEXT.md: Report). */
+  flows: FlowSnapshot[];
 }
 
 export interface ProposedFlow {
@@ -60,7 +62,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey) {
     console.warn('exploration skipped: CURSOR_API_KEY not set — run `npx @bonyadnouri/autoend init`');
-    return { discovered: 0, findings: [] };
+    return { discovered: 0, findings: [], flows: [] };
   }
 
   const workDir = join(opts.runDir, 'explore');
@@ -90,7 +92,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   }
 
   const proposed = collectProposedFlows(reports, opts.knownFlows);
-  let discovered = 0;
+  const flowSnapshots: FlowSnapshot[] = [];
   if (proposed.length > 0) {
     const browser = await chromium.launch();
     try {
@@ -101,7 +103,16 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
         if (outcome.ok) {
           const now = new Date().toISOString();
           await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
-          discovered += 1;
+          flowSnapshots.push({
+            id: flow.id,
+            title: flow.title,
+            status: 'discovered',
+            discoveredAt: now,
+            lastPassedAt: now,
+            timeline: outcome.timeline,
+            evidence: outcome.evidence,
+            durationMs: outcome.durationMs,
+          });
         } else {
           console.warn(`proposed flow "${flow.id}" failed verification and was discarded: ${outcome.error}`);
         }
@@ -111,7 +122,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
     }
   }
 
-  return { discovered, findings };
+  return { discovered: flowSnapshots.length, findings, flows: flowSnapshots };
 }
 
 async function runExplorer(

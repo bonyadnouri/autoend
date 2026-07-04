@@ -47,6 +47,14 @@ describe('run artifact', () => {
       startedAt: new Date().toISOString(),
       flowsReplayed: 0,
       flowsDiscovered: 0,
+      flows: [],
+      environment: {
+        browser: 'Chromium (not launched)',
+        viewport: '1280×720',
+        os: 'linux 6.0.0',
+        node: 'v23.6.0',
+        autoendVersion: '0.0.0',
+      },
       findings: [],
       heals: [],
     };

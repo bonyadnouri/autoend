@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
@@ -109,6 +109,14 @@ async function writeMeta(repoRoot: string, meta: FlowMeta): Promise<void> {
 /** Update a Flow's metadata in place (e.g. lastPassedAt after a green replay). */
 export async function saveFlowMeta(repoRoot: string, meta: FlowMeta): Promise<void> {
   await writeMeta(repoRoot, meta);
+}
+
+/**
+ * Dismiss (CONTEXT.md): permanent map surgery — the Flow leaves the Map. A
+ * plain file edit performed by the viewer server (ADR-0004).
+ */
+export async function removeFlow(repoRoot: string, flowId: string): Promise<void> {
+  await rm(join(flowMapDir(repoRoot), flowId), { recursive: true, force: true });
 }
 
 /** Flows enter the map automatically on first successful execution (ADR-0001). */

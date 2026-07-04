@@ -3,12 +3,24 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { flowMapDir, saveFlowMeta, type FlowMeta } from '../map/flow-map.js';
-import type { Finding, Heal } from '../report/types.js';
+import type {
+  ConsoleEntry,
+  Finding,
+  FlowSnapshot,
+  Heal,
+  NetworkEntry,
+  Screenshot,
+  StepResult,
+} from '../report/types.js';
 
 export interface ReplayResult {
   replayed: number;
   findings: Finding[];
   heals: Heal[];
+  /** One snapshot per replayed Flow — the Report's receipts (CONTEXT.md: Report). */
+  flows: FlowSnapshot[];
+  /** Chromium build string, present when a browser was actually launched. */
+  browserVersion?: string;
 }
 
 /**
@@ -24,18 +36,27 @@ export type FlowScript = (page: Page, target: URL) => Promise<void>;
 
 const FLOW_TIMEOUT_MS = 60_000;
 const REPLAY_WORKERS = 4;
+const VIEWPORT = { width: 1280, height: 720 };
+const CAPTURE_CAP = 50; // per stream; drop beyond, note nothing — caps keep report.json bounded
 
 export interface ScriptOutcome {
   ok: boolean;
   error?: string;
   /** Evidence filename within evidenceDir (WebM). */
   evidence?: string;
+  console: ConsoleEntry[];
+  network: NetworkEntry[];
+  timeline: StepResult[];
+  screenshots: Screenshot[];
+  durationMs: number;
 }
 
 /**
  * Execute one Flow script in a fresh recording browser context. Shared by
  * replay (map scripts) and exploration (verify-by-running a proposed script
- * before it may enter the Flow Map, ADR-0002).
+ * before it may enter the Flow Map, ADR-0002). Alongside the WebM Evidence it
+ * captures the panels the viewer renders (ADR-0005): console/page errors,
+ * failed network, a navigation timeline, and before/after screenshots.
  */
 export async function runFlowScript(
   browser: Browser,
@@ -44,9 +65,53 @@ export async function runFlowScript(
   evidenceDir: string,
   videoBase: string,
 ): Promise<ScriptOutcome> {
-  const context = await browser.newContext({ recordVideo: { dir: evidenceDir } });
+  const context = await browser.newContext({ recordVideo: { dir: evidenceDir }, viewport: VIEWPORT });
   // TODO: inject shared storage state (src/auth/session.ts) once fleet auth exists.
   const page = await context.newPage();
+
+  const startedMs = Date.now();
+  const consoleEntries: ConsoleEntry[] = [];
+  const network: NetworkEntry[] = [];
+  const timeline: StepResult[] = [];
+  const screenshots: Screenshot[] = [];
+
+  const screenshot = async (label: Screenshot['label'], file: string): Promise<void> => {
+    try {
+      await page.screenshot({ path: join(evidenceDir, file) });
+      screenshots.push({ file, label, tMs: Date.now() - startedMs });
+    } catch {
+      // A crashed or closed page must not mask the Flow's own error.
+    }
+  };
+
+  page.on('console', (msg) => {
+    const level = msg.type() === 'error' ? 'error' : msg.type() === 'warning' ? 'warning' : undefined;
+    if (level && consoleEntries.length < CAPTURE_CAP)
+      consoleEntries.push({ level, text: msg.text(), tMs: Date.now() - startedMs });
+  });
+  page.on('pageerror', (err) => {
+    if (consoleEntries.length < CAPTURE_CAP)
+      consoleEntries.push({ level: 'error', text: String(err), tMs: Date.now() - startedMs });
+  });
+  page.on('response', (res) => {
+    if (res.status() >= 400 && network.length < CAPTURE_CAP)
+      network.push({ method: res.request().method(), url: res.url(), status: res.status(), tMs: Date.now() - startedMs });
+  });
+  page.on('requestfailed', (req) => {
+    if (network.length < CAPTURE_CAP)
+      network.push({ method: req.method(), url: req.url(), status: 0, tMs: Date.now() - startedMs });
+  });
+  page.on('framenavigated', (frame) => {
+    if (frame !== page.mainFrame() || frame.url() === 'about:blank' || timeline.length >= CAPTURE_CAP) return;
+    const path = new URL(frame.url()).pathname;
+    timeline.push({ label: `goto ${path}`, status: 'passed', tMs: Date.now() - startedMs });
+  });
+  // First main-frame load → the "before" screenshot; awaited below so it always precedes "after".
+  let beforeShot: Promise<void> | undefined;
+  page.once('load', () => {
+    beforeShot = screenshot('before', `${videoBase}-before.png`);
+  });
+
   let failure: unknown;
   try {
     const script = await loadFlowScript(scriptPath);
@@ -54,6 +119,16 @@ export async function runFlowScript(
   } catch (error) {
     failure = error;
   }
+
+  if (beforeShot) await beforeShot;
+  if (failure !== undefined) {
+    const message = failure instanceof Error ? failure.message : String(failure);
+    timeline.push({ label: message.slice(0, 80), status: 'failed', tMs: Date.now() - startedMs });
+    await screenshot('at-failure', `${videoBase}-at-failure.png`);
+  } else {
+    await screenshot('after', `${videoBase}-after.png`);
+  }
+
   const video = page.video();
   await context.close(); // finalizes the recording
   let evidence: string | undefined;
@@ -61,10 +136,12 @@ export async function runFlowScript(
     evidence = `${videoBase}.webm`;
     await rename(await video.path(), join(evidenceDir, evidence));
   }
+  const durationMs = Date.now() - startedMs;
+  const capture = { console: consoleEntries, network, timeline, screenshots, durationMs, evidence };
   if (failure !== undefined) {
-    return { ok: false, error: failure instanceof Error ? failure.message : String(failure), evidence };
+    return { ok: false, error: failure instanceof Error ? failure.message : String(failure), ...capture };
   }
-  return { ok: true, evidence };
+  return { ok: true, ...capture };
 }
 
 /**
@@ -79,33 +156,56 @@ export async function replayFlowMap(
   evidenceDir: string,
 ): Promise<ReplayResult> {
   if (flows.length === 0) {
-    return { replayed: 0, findings: [], heals: [] };
+    return { replayed: 0, findings: [], heals: [], flows: [] };
   }
   const browser = await chromium.launch();
   try {
-    const outcomes = await withPool(flows, REPLAY_WORKERS, async (flow) => {
-      const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
-      const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
-      if (!outcome.ok) {
-        // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
-        // before reporting. Until healing exists, every failure is a Regression.
-        const finding: Finding = {
-          id: `regression-${flow.id}`,
-          kind: 'regression',
-          flowId: flow.id,
-          title: `Flow "${flow.title}" failed on replay`,
-          detail: outcome.error ?? 'unknown failure',
+    const browserVersion = browser.version();
+    const results = await withPool(
+      flows,
+      REPLAY_WORKERS,
+      async (flow): Promise<{ snapshot: FlowSnapshot; finding?: Finding }> => {
+        const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
+        const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
+        const snapshot: FlowSnapshot = {
+          id: flow.id,
+          title: flow.title,
+          status: outcome.ok ? 'passed' : 'failed',
+          discoveredAt: flow.discoveredAt,
+          lastPassedAt: flow.lastPassedAt,
+          timeline: outcome.timeline,
           evidence: outcome.evidence,
+          durationMs: outcome.durationMs,
         };
-        return finding;
-      }
-      await saveFlowMeta(repoRoot, { ...flow, lastPassedAt: new Date().toISOString() });
-      return undefined;
-    });
+        if (!outcome.ok) {
+          // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
+          // before reporting. Until healing exists, every failure is a Regression.
+          const finding: Finding = {
+            id: `regression-${flow.id}`,
+            kind: 'regression',
+            flowId: flow.id,
+            title: `Flow "${flow.title}" failed on replay`,
+            detail: outcome.error ?? 'unknown failure',
+            evidence: outcome.evidence,
+            console: outcome.console,
+            network: outcome.network,
+            timeline: outcome.timeline,
+            screenshots: outcome.screenshots,
+          };
+          return { snapshot, finding };
+        }
+        const lastPassedAt = new Date().toISOString();
+        await saveFlowMeta(repoRoot, { ...flow, lastPassedAt });
+        snapshot.lastPassedAt = lastPassedAt;
+        return { snapshot };
+      },
+    );
     return {
       replayed: flows.length,
-      findings: outcomes.filter((f): f is Finding => f !== undefined),
+      findings: results.map((r) => r.finding).filter((f): f is Finding => f !== undefined),
       heals: [],
+      flows: results.map((r) => r.snapshot),
+      browserVersion,
     };
   } finally {
     await browser.close();
