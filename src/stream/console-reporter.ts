@@ -1,6 +1,6 @@
 import pc from 'picocolors';
 import type { RunEvent } from './events.js';
-import type { RunReporter } from './reporter.js';
+import type { RunReporter, RunStartedInfo, RunSummary } from './reporter.js';
 
 function formatEvent(event: RunEvent): string {
   switch (event.type) {
@@ -22,16 +22,16 @@ function formatEvent(event: RunEvent): string {
 }
 
 export class ConsoleReporter implements RunReporter {
-  async runStarted(info): Promise<void> {
+  async runStarted(info: RunStartedInfo): Promise<void> {
     console.log(pc.cyan(`run ${info.runId} started`) + pc.dim(` · ${info.kind} · ${info.effort}`));
   }
 
-  async runFinished(summary): Promise<void> {
+  async runFinished(summary: RunSummary): Promise<void> {
     const color = summary.status === 'finished' ? pc.green : pc.red;
     console.log(color(`run ${summary.runId} ${summary.status}`) + (summary.error ? pc.dim(` · ${summary.error}`) : ''));
   }
 
-  async event(event): Promise<void> {
+  async event(event: RunEvent): Promise<void> {
     console.log(pc.dim('  ') + formatEvent(event));
   }
 

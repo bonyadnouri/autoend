@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { edgeId, screenId, screenTitle } from '../src/stream/screen-id.js';
+import { edgeId, screenId, screenTitle } from '../../src/stream/screen-id.js';
 
 describe('screenId', () => {
   it('normalizes root', () => {
