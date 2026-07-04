@@ -12,6 +12,7 @@ import type {
   Screenshot,
   StepResult,
 } from '../report/types.js';
+import { withoutSensitiveEnv } from '../run/sensitive-env.js';
 
 export interface ReplayResult {
   replayed: number;
@@ -161,44 +162,49 @@ export async function replayFlowMap(
   const browser = await chromium.launch();
   try {
     const browserVersion = browser.version();
-    const results = await withPool(
-      flows,
-      REPLAY_WORKERS,
-      async (flow): Promise<{ snapshot: FlowSnapshot; finding?: Finding }> => {
-        const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
-        const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
-        const snapshot: FlowSnapshot = {
-          id: flow.id,
-          title: flow.title,
-          status: outcome.ok ? 'passed' : 'failed',
-          discoveredAt: flow.discoveredAt,
-          lastPassedAt: flow.lastPassedAt,
-          timeline: outcome.timeline,
-          evidence: outcome.evidence,
-          durationMs: outcome.durationMs,
-        };
-        if (!outcome.ok) {
-          // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
-          // before reporting. Until healing exists, every failure is a Regression.
-          const finding: Finding = {
-            id: `regression-${flow.id}`,
-            kind: 'regression',
-            flowId: flow.id,
-            title: `Flow "${flow.title}" failed on replay`,
-            detail: outcome.error ?? 'unknown failure',
-            evidence: outcome.evidence,
-            console: outcome.console,
-            network: outcome.network,
+    // Map scripts are LLM-authored and imported in-process (ADR-0002); hide
+    // secrets from them while the whole pool runs (issue #3). Scrubbing wraps
+    // the batch, not each script, because process.env is process-global.
+    const results = await withoutSensitiveEnv(() =>
+      withPool(
+        flows,
+        REPLAY_WORKERS,
+        async (flow): Promise<{ snapshot: FlowSnapshot; finding?: Finding }> => {
+          const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
+          const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
+          const snapshot: FlowSnapshot = {
+            id: flow.id,
+            title: flow.title,
+            status: outcome.ok ? 'passed' : 'failed',
+            discoveredAt: flow.discoveredAt,
+            lastPassedAt: flow.lastPassedAt,
             timeline: outcome.timeline,
-            screenshots: outcome.screenshots,
+            evidence: outcome.evidence,
+            durationMs: outcome.durationMs,
           };
-          return { snapshot, finding };
-        }
-        const lastPassedAt = new Date().toISOString();
-        await saveFlowMeta(repoRoot, { ...flow, lastPassedAt });
-        snapshot.lastPassedAt = lastPassedAt;
-        return { snapshot };
-      },
+          if (!outcome.ok) {
+            // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
+            // before reporting. Until healing exists, every failure is a Regression.
+            const finding: Finding = {
+              id: `regression-${flow.id}`,
+              kind: 'regression',
+              flowId: flow.id,
+              title: `Flow "${flow.title}" failed on replay`,
+              detail: outcome.error ?? 'unknown failure',
+              evidence: outcome.evidence,
+              console: outcome.console,
+              network: outcome.network,
+              timeline: outcome.timeline,
+              screenshots: outcome.screenshots,
+            };
+            return { snapshot, finding };
+          }
+          const lastPassedAt = new Date().toISOString();
+          await saveFlowMeta(repoRoot, { ...flow, lastPassedAt });
+          snapshot.lastPassedAt = lastPassedAt;
+          return { snapshot };
+        },
+      ),
     );
     return {
       replayed: flows.length,

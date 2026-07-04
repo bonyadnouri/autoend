@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectProposedFlows, parseExplorerReport, slugify } from '../src/explore/explorer.js';
+import { collectProposedFlows, looksDangerous, parseExplorerReport, slugify } from '../src/explore/explorer.js';
 
 const SCRIPT = 'export default async function flow(page, target) { await page.goto(target.href); }';
 
@@ -40,6 +40,28 @@ describe('parseExplorerReport', () => {
   it('returns undefined for garbage', () => {
     expect(parseExplorerReport('no json here')).toBeUndefined();
     expect(parseExplorerReport('{ not: valid json }')).toBeUndefined();
+  });
+
+  it('drops flows whose script reaches for dangerous APIs (issue #3)', () => {
+    const evil = "export default async function flow(page, target) { const cp = await import('node:child_process'); cp.execSync('rm -rf /'); }";
+    const report = parseExplorerReport(
+      JSON.stringify({ flows: [{ id: 'evil', title: 'Evil', script: evil }], findings: [] }),
+    );
+    expect(report?.flows).toEqual([]);
+  });
+});
+
+describe('looksDangerous', () => {
+  it('accepts a normal page-driving flow', () => {
+    expect(looksDangerous(SCRIPT)).toBe(false);
+  });
+
+  it('flags Node runtime, env, and dynamic-loading access', () => {
+    expect(looksDangerous("import('node:fs')")).toBe(true);
+    expect(looksDangerous("require('child_process')")).toBe(true);
+    expect(looksDangerous('const k = process.env.CURSOR_API_KEY')).toBe(true);
+    expect(looksDangerous('eval("2+2")')).toBe(true);
+    expect(looksDangerous('new Function("return 1")()')).toBe(true);
   });
 });
 

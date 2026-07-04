@@ -133,6 +133,10 @@ autoend clean              delete all local Run artifacts
 
 Agents act on your app **for real**: they submit forms and click buttons. Two rails are built in — agents never navigate off the Target's origin, and they're instructed to avoid destructive or irreversible actions. The third rail is yours: **point autoend at an environment where real actions are safe** (localhost, staging with test data), never at production.
 
+### Generated scripts run in-process (trust boundary)
+
+Discovered and replayed Flow scripts are LLM-authored and executed in the Run's own Node process (verify-by-running, ADR-0002). That's a real trust boundary: a bad generation — or a prompt-injected Target page — could emit a script that reaches for the Node runtime. Two defense-in-depth mitigations are in place today: proposed scripts that reference disallowed APIs (`process.env`, `child_process`, dynamic `import()`/`require`, `eval`, …) are rejected before execution, and secret-looking environment variables (e.g. `CURSOR_API_KEY`) are stripped from `process.env` while any generated script runs. These are mitigations, not a sandbox — running scripts in a locked-down child process is tracked as follow-up work.
+
 ## The Flow Map is yours
 
 ```
