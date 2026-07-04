@@ -22,7 +22,7 @@
     "node": ">=23.6"
   },
   "bin": {
-    "autoend": "./dist/cli.js"
+    "autoend": "dist/cli.js"
   },
   "files": [
     "dist"
