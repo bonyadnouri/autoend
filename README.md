@@ -7,6 +7,8 @@ npx autoend init    # guided setup — takes a minute
 npx autoend         # agents test your app, a report opens
 ```
 
+Straight from GitHub also works: `npx github:bonyadnouri/autoend init`
+
 No test suite to write. No selectors to maintain. Agents discover your app's flows, guard them on every run, and hand you the evidence on film.
 
 ![autoend report showing a hard failure verdict with tiered findings](docs/assets/report-failure.png)
@@ -93,3 +95,7 @@ npm test              # vitest — includes a real browser replay integration te
 npm run build         # tsc → dist/
 npm run dev -- http://localhost:3000 -e low --no-open
 ```
+
+## License
+
+[MIT](./LICENSE)

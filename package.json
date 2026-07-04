@@ -2,7 +2,21 @@
   "name": "autoend",
   "version": "0.0.1",
   "description": "Agent-powered end-to-end testing: initiate a Run, agents test your app, review a video-backed Report.",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bonyadnouri/autoend.git"
+  },
+  "homepage": "https://github.com/bonyadnouri/autoend#readme",
+  "bugs": "https://github.com/bonyadnouri/autoend/issues",
+  "keywords": [
+    "e2e",
+    "testing",
+    "agents",
+    "playwright",
+    "browser-automation",
+    "ai"
+  ],
   "type": "module",
   "engines": {
     "node": ">=23.6"
@@ -15,6 +29,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
