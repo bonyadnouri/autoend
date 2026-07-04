@@ -4,7 +4,14 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
  * The Lumen UI reads a single analysis by this id (its default `analysisId`),
  * so publishing under the same id means the UI needs zero changes to show a Run.
  */
-export const ANALYSIS_ID = 'shopflow-default';
+export const DEFAULT_ANALYSIS_ID = 'shopflow-default';
+
+/** @deprecated use resolveAnalysisId() */
+export const ANALYSIS_ID = DEFAULT_ANALYSIS_ID;
+
+export function resolveAnalysisId(config?: { analysisId?: string }): string {
+  return process.env.AUTOEND_ANALYSIS_ID ?? config?.analysisId ?? DEFAULT_ANALYSIS_ID;
+}
 
 /** Public Storage bucket that holds a Run's evidence (WebM video, screenshots). */
 export const EVIDENCE_BUCKET = 'evidence';

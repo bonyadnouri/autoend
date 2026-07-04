@@ -27,6 +27,11 @@
   "files": [
     "dist"
   ],
+  "exports": {
+    ".": "./dist/cli.js",
+    "./run": "./dist/run/run.js",
+    "./stream": "./dist/stream/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "tsc -p tsconfig.json",

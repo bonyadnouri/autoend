@@ -8,6 +8,8 @@ export interface AutoendConfig {
   effort: Effort;
   /** Cursor model id for all agent roles; absent = strongest available (ADR-0009). */
   model?: string;
+  /** Supabase analysis id for publish/stream (default: shopflow-default). */
+  analysisId?: string;
 }
 
 export function configPath(repoRoot: string): string {
