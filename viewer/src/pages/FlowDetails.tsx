@@ -1,7 +1,8 @@
 import { Link, useParams } from "react-router-dom";
-import { ListChecks, CheckCircle2, XCircle, Video } from "lucide-react";
+import { ListChecks, CheckCircle2, XCircle, Video, Wand2 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { FlowStatusBadge, KindBadge } from "../components/StatusBadge";
+import { ResolutionActions } from "../components/ResolutionActions";
 import { NotFound } from "./NotFound";
 import { useReport, evidenceUrl } from "../data/report";
 import { formatClock, formatDateTime, formatDuration } from "../data/helpers";
@@ -14,6 +15,7 @@ export function FlowDetails() {
 
   const timeline = flow.timeline ?? [];
   const linked = artifact.findings.filter((f) => f.flowId === flow.id);
+  const heal = artifact.heals.find((h) => h.flowId === flow.id);
 
   return (
     <div>
@@ -36,6 +38,20 @@ export function FlowDetails() {
                 controls
                 className="aspect-video w-full bg-black"
               />
+            </section>
+          )}
+
+          {heal && (
+            <section className="card border-l-4 border-l-status-ai p-5">
+              <div className="mb-2 flex items-center gap-2">
+                <Wand2 size={17} className="text-status-ai" />
+                <h2 className="text-base font-semibold text-slate-900">Heal</h2>
+                <span className="pill bg-status-aiBg text-status-ai">Verify this</span>
+              </div>
+              <p className="text-sm leading-relaxed text-slate-600">{heal.summary}</p>
+              <div className="mt-3">
+                <ResolutionActions id={heal.flowId} action="reject" />
+              </div>
             </section>
           )}
 

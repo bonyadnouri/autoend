@@ -10,7 +10,7 @@ const levelTone: Record<ConsoleEntry["level"], string> = {
 
 const levels: (ConsoleEntry["level"] | "all")[] = ["all", "warning", "error"];
 
-/** Retyped to ConsoleEntry[] for the real schema; Task 5 wires it into FindingDetails. */
+/** The console output captured while the Flow ran, filterable by level and text. */
 export function LogPanel({ logs }: { logs: ConsoleEntry[] }) {
   const [query, setQuery] = useState("");
   const [level, setLevel] = useState<ConsoleEntry["level"] | "all">("all");

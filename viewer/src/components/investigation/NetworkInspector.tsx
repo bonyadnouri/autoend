@@ -16,7 +16,7 @@ function statusTone(status: number): string {
   return "text-status-pass";
 }
 
-/** Retyped to NetworkEntry[] for the real schema; Task 5 wires it into FindingDetails. */
+/** The network requests captured while the Flow ran; status 0 shows as "failed". */
 export function NetworkInspector({ requests }: { requests: NetworkEntry[] }) {
   const failedCount = requests.filter((r) => r.status === 0 || r.status >= 400).length;
 

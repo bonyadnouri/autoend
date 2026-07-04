@@ -2,8 +2,14 @@ import { CheckCircle2, XCircle, GitCommitHorizontal } from "lucide-react";
 import type { StepResult } from "../../types";
 import { formatClock } from "../../data/helpers";
 
-/** Retyped to StepResult[] for the real schema; Task 5 wires it into FindingDetails. */
-export function ExecutionTimeline({ timeline }: { timeline: StepResult[] }) {
+/** The Flow's execution steps; clicking a step seeks the Evidence video to it. */
+export function ExecutionTimeline({
+  timeline,
+  onSeek,
+}: {
+  timeline: StepResult[];
+  onSeek?: (ms: number) => void;
+}) {
   return (
     <section className="card p-5">
       <div className="mb-4 flex items-center gap-2">
@@ -16,9 +22,10 @@ export function ExecutionTimeline({ timeline }: { timeline: StepResult[] }) {
           const failed = step.status === "failed";
           const Icon = failed ? XCircle : CheckCircle2;
           return (
-            <div
+            <button
               key={i}
-              className="w-40 shrink-0 rounded-lg border border-slate-200 bg-white p-3"
+              onClick={() => onSeek?.(step.tMs)}
+              className="w-40 shrink-0 rounded-lg border border-slate-200 bg-white p-3 text-left transition-colors hover:border-brand-200 hover:bg-brand-50/40"
             >
               <span
                 className={`inline-flex h-7 w-7 items-center justify-center rounded-lg ${
@@ -29,7 +36,7 @@ export function ExecutionTimeline({ timeline }: { timeline: StepResult[] }) {
               </span>
               <div className="mt-2 truncate text-xs font-semibold text-slate-800">{step.label}</div>
               <div className="mt-1 font-mono text-[10px] text-slate-400">{formatClock(step.tMs)}</div>
-            </div>
+            </button>
           );
         })}
       </div>

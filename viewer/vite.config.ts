@@ -30,6 +30,23 @@ function fixtureReport(): Plugin {
         try {
           const body = await readFile(file);
           res.setHeader('content-type', mime[extname(file)] ?? 'application/octet-stream');
+          // Byte ranges: Chrome refuses to seek a <video> served without them.
+          res.setHeader('accept-ranges', 'bytes');
+          const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
+          if (range) {
+            const start = Number(range[1]);
+            const end = range[2] === '' ? body.length - 1 : Math.min(Number(range[2]), body.length - 1);
+            if (start > end || start >= body.length) {
+              res.statusCode = 416;
+              res.setHeader('content-range', `bytes */${body.length}`);
+              res.end();
+              return;
+            }
+            res.statusCode = 206;
+            res.setHeader('content-range', `bytes ${start}-${end}/${body.length}`);
+            res.end(body.subarray(start, end + 1));
+            return;
+          }
           res.end(body);
         } catch {
           res.statusCode = 404;

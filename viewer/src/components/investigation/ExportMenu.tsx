@@ -1,61 +1,59 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  Download,
-  ChevronDown,
-  FileJson,
-  Ticket,
-  ClipboardCopy,
-  Check,
-  ExternalLink,
-  X,
-} from "lucide-react";
-import type { Finding } from "../../types";
+import { Download, ChevronDown, FileJson, ClipboardCopy, Check } from "lucide-react";
+import type { Environment, FaultDomain, Finding } from "../../types";
+import { KIND_LABEL } from "../../data/helpers";
 
 interface Props {
   finding: Finding;
   runId: string;
   target: string;
+  environment: Environment;
 }
 
+const faultLabel: Record<FaultDomain, string> = {
+  app: "App",
+  flow: "Flow",
+  environment: "Environment",
+};
+
+/** The portable Finding export: the whole Finding, wrapped with its Run provenance. */
 function buildReport(finding: Finding, runId: string, target: string) {
   return {
     generatedAt: new Date().toISOString(),
     runId,
     target,
-    finding: {
-      id: finding.id,
-      kind: finding.kind,
-      title: finding.title,
-      detail: finding.detail,
-      flowId: finding.flowId,
-    },
-    diagnosis: finding.diagnosis,
-    timeline: finding.timeline,
-    network: finding.network,
-    console: finding.console,
-    screenshots: finding.screenshots,
+    finding,
   };
 }
 
-function buildTextSummary(finding: Finding, runId: string, target: string): string {
+/** A markdown summary of the Finding, clipboard-ready to paste into any tracker. */
+function buildTextSummary(finding: Finding, env: Environment): string {
+  const lines = [`## ${KIND_LABEL[finding.kind]}: ${finding.title}`, "", finding.detail];
+
   const d = finding.diagnosis;
-  const lines = [
-    `Finding ${finding.id} — ${finding.title}`,
-    `Run: ${runId}`,
-    `Target: ${target}`,
-    `Kind: ${finding.kind}`,
-    d ? `Root cause: ${d.rootCause}` : "",
-    d ? `Confidence: ${d.confidence}% (${d.faultDomain})` : "",
+  if (d) {
+    lines.push(
+      "",
+      `**Diagnosis:** ${d.rootCause} — ${faultLabel[d.faultDomain]} fault, ${d.confidence}% confidence`,
+    );
+  }
+
+  lines.push(
     "",
-    finding.detail,
-  ];
-  return lines.filter(Boolean).join("\n");
+    `**Environment:** ${env.browser} · ${env.viewport} · ${env.os} · Node ${env.node} · autoend ${env.autoendVersion}`,
+  );
+
+  const shots = finding.screenshots?.length ?? 0;
+  const evidence = [`${shots} screenshots`];
+  if (finding.evidence) evidence.push("video");
+  lines.push(`**Evidence:** ${evidence.join(", ")}`);
+
+  return lines.join("\n");
 }
 
-export function ExportMenu({ finding, runId, target }: Props) {
+export function ExportMenu({ finding, runId, target, environment }: Props) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [ticket, setTicket] = useState<{ key: string } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -72,7 +70,7 @@ export function ExportMenu({ finding, runId, target }: Props) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${finding.id}-finding.json`;
+    a.download = `${finding.id}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -80,20 +78,14 @@ export function ExportMenu({ finding, runId, target }: Props) {
     setOpen(false);
   }
 
-  async function copyReport() {
+  async function copySummary() {
     try {
-      await navigator.clipboard.writeText(buildTextSummary(finding, runId, target));
+      await navigator.clipboard.writeText(buildTextSummary(finding, environment));
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch {
       /* clipboard unavailable in some sandboxes */
     }
-    setOpen(false);
-  }
-
-  function createTicket() {
-    const key = `AE-${1400 + Math.floor(Math.random() * 600)}`;
-    setTicket({ key });
     setOpen(false);
   }
 
@@ -109,69 +101,15 @@ export function ExportMenu({ finding, runId, target }: Props) {
           <MenuItem
             icon={FileJson}
             title="Download JSON"
-            subtitle="Full Finding as .json"
+            subtitle="Finding export (.json)"
             onClick={downloadJson}
-          />
-          <MenuItem
-            icon={Ticket}
-            title="Create ticket"
-            subtitle="Attach the Finding (mock)"
-            onClick={createTicket}
           />
           <MenuItem
             icon={copied ? Check : ClipboardCopy}
             title={copied ? "Copied!" : "Copy summary"}
-            subtitle="Plain-text summary to clipboard"
-            onClick={copyReport}
+            subtitle="Markdown for any tracker"
+            onClick={copySummary}
           />
-        </div>
-      )}
-
-      {ticket && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4"
-          onClick={() => setTicket(null)}
-        >
-          <div
-            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-cardHover"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2">
-                <span className="grid h-9 w-9 place-items-center rounded-lg bg-status-passBg text-status-pass">
-                  <Check size={18} />
-                </span>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Ticket created</h3>
-                  <p className="text-xs text-slate-500">Mock integration - no external call made</p>
-                </div>
-              </div>
-              <button className="text-slate-400 hover:text-slate-600" onClick={() => setTicket(null)}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-              <span className="font-mono text-sm font-bold text-brand-700">{ticket.key}</span>
-              <p className="mt-2 text-sm font-medium text-slate-800">{finding.title}</p>
-              <p className="mt-1 text-xs text-slate-500">
-                Diagnosis, network, console and screenshots attached.
-              </p>
-              <a
-                href="#"
-                className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-brand-600 hover:text-brand-700"
-                onClick={(e) => e.preventDefault()}
-              >
-                Open ticket <ExternalLink size={14} />
-              </a>
-            </div>
-
-            <div className="mt-5 flex justify-end">
-              <button className="btn-primary" onClick={() => setTicket(null)}>
-                Done
-              </button>
-            </div>
-          </div>
         </div>
       )}
     </div>

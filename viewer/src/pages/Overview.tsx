@@ -11,6 +11,7 @@ import {
 import { PageHeader } from "../components/PageHeader";
 import { MetricCard } from "../components/MetricCard";
 import { KindBadge } from "../components/StatusBadge";
+import { ResolutionActions } from "../components/ResolutionActions";
 import { useReport } from "../data/report";
 import { formatDateTime, formatDuration } from "../data/helpers";
 import type { FindingKind } from "../types";
@@ -151,6 +152,42 @@ export function Overview() {
           </div>
         )}
       </section>
+
+      {artifact.heals.length > 0 && (
+        <section className="card mt-6 p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <Wand2 size={17} className="text-status-ai" />
+            <h2 className="text-base font-semibold text-slate-900">Heals</h2>
+            <span className="pill bg-status-aiBg text-status-ai">Verify these</span>
+          </div>
+          <div className="space-y-3">
+            {artifact.heals.map((heal, i) => {
+              const flow = artifact.flows.find((f) => f.id === heal.flowId);
+              return (
+                <div key={i} className="rounded-lg border border-slate-100 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="text-sm font-semibold text-slate-800">
+                      {flow?.title ?? heal.flowId}
+                    </div>
+                    {flow && (
+                      <Link
+                        to={`/flows/${heal.flowId}`}
+                        className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-brand-600 hover:text-brand-700"
+                      >
+                        Watch Evidence <ArrowRight size={14} />
+                      </Link>
+                    )}
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600">{heal.summary}</p>
+                  <div className="mt-3">
+                    <ResolutionActions id={heal.flowId} action="reject" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

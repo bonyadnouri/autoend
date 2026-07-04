@@ -1,14 +1,16 @@
-import { Globe, MonitorSmartphone, Cpu, Package, Boxes } from "lucide-react";
+import { Globe, MonitorSmartphone, Cpu, Package, Boxes, Clock } from "lucide-react";
 import type { Environment } from "../../types";
+import { formatDateTime } from "../../data/helpers";
 
-/** Retyped to the real Environment schema; Task 5 wires it into FindingDetails. */
-export function EnvironmentDetails({ env }: { env: Environment }) {
+/** The run-level Environment this Flow executed in. */
+export function EnvironmentDetails({ env, startedAt }: { env: Environment; startedAt: string }) {
   const rows = [
     { icon: Globe, label: "Browser", value: env.browser },
     { icon: MonitorSmartphone, label: "Viewport", value: env.viewport },
     { icon: Cpu, label: "OS", value: env.os },
     { icon: Package, label: "Node", value: env.node },
     { icon: Boxes, label: "autoend", value: env.autoendVersion },
+    { icon: Clock, label: "Started", value: formatDateTime(startedAt) },
   ];
 
   return (

@@ -9,7 +9,13 @@ const labelTone: Record<Screenshot["label"], string> = {
   "at-failure": "bg-status-failBg text-status-fail",
 };
 
-/** Retyped to Screenshot[] for the real schema; Task 5 wires it into FindingDetails. */
+const labelText: Record<Screenshot["label"], string> = {
+  before: "Before",
+  after: "After",
+  "at-failure": "At failure",
+};
+
+/** The still frames captured around a Finding; clicking one seeks the Evidence video. */
 export function EvidencePackage({
   screenshots,
   onSeek,
@@ -28,12 +34,12 @@ export function EvidencePackage({
         {screenshots.map((shot, i) => (
           <button key={i} onClick={() => onSeek?.(shot.tMs)} className="group text-left">
             <div className="mb-2 flex items-center justify-between">
-              <span className={`pill ${labelTone[shot.label]}`}>{shot.label}</span>
+              <span className={`pill ${labelTone[shot.label]}`}>{labelText[shot.label]}</span>
               <span className="font-mono text-[10px] text-slate-400">{formatClock(shot.tMs)}</span>
             </div>
             <img
               src={evidenceUrl(shot.file)}
-              alt={shot.label}
+              alt={labelText[shot.label]}
               className="w-full rounded-lg border border-slate-200 ring-1 ring-transparent transition-all group-hover:ring-brand-200"
             />
           </button>
