@@ -84,14 +84,15 @@ $ npx @bonyadnouri/autoend
 
 Run starting http://localhost:3000 · effort mid
 Run finished in 94.1s · 12 replayed · 2 discovered · all clear
-Report: http://127.0.0.1:53211/
+Artifact: .autoend/runs/2026-07-04T10-01-00-000Z
+Published to Supabase · 12 tests · 2 issues · 1 investigations
 ```
 
 Your **first Run is a discovery run** — the map is empty, so agents spend the whole budget exploring and the map gets its first flows. Every Run after that opens by replaying everything already known, so regressions surface even at the lowest effort.
 
 ### 3. Read the report
 
-A browser tab opens with the verdict up top and findings below, sorted by how much you should care:
+Each Run writes its results to Supabase (see [Publishing results](#publishing-results-to-supabase)), where the Lumen dashboard reads them. Findings are sorted by how much you should care:
 
 | Tier | Meaning | Your move |
 |---|---|---|
@@ -103,6 +104,26 @@ A browser tab opens with the verdict up top and findings below, sorted by how mu
 Every finding carries a video. Watch it before you read another line of logs.
 
 ![autoend report showing the all clear state](docs/assets/viewer-all-clear.png)
+
+### Publishing results to Supabase
+
+A Run publishes its results to the Supabase project behind the Lumen dashboard. Configure these environment variables (in the gitignored `.env`, or the shell):
+
+```sh
+SUPABASE_URL=https://your-project.supabase.co
+# Preferred: the service-role key — needed to upload evidence video to Storage.
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+# Or, for table writes only (no evidence upload), the anon key:
+# SUPABASE_ANON_KEY=your-anon-key
+```
+
+When set, each Run:
+
+- writes real results into `tests` (from flows), `issues` (from findings), and `investigations` (evidence detail) under the `shopflow-default` analysis, and updates that analysis's summary counts;
+- uploads each Run's WebM video to a public `evidence` Storage bucket and points the investigation's `replay.videoUrl` at it, so the dashboard plays the real recording;
+- writes the analysis summary **last**, so `analyses.analyzed_at` is an atomic "this Run is fully published" marker — a newer timestamp means fresh, complete data.
+
+Everything the Run does not produce (app map, journeys, insights) stays as the dashboard's seeded data. When the variables are unset, the Run still completes and writes its local artifact; it just prints a warning and skips publishing.
 
 ### 4. Choose your effort
 
@@ -124,9 +145,6 @@ autoend [target-url]       start a Run (falls back to your configured target)
 autoend clean              delete all local Run artifacts
 
   -e, --effort <level>     low | mid | high | xhigh | ultra
-      --no-open            don't open the Report in a browser
-      --no-serve           write the Run artifact and exit (CI-style)
-      --port <n>           viewer port (default: random)
 ```
 
 ### Guardrails
@@ -169,7 +187,7 @@ Early and honest about it. The architecture is settled, documented, and verified
 - [x] Run pipeline: replay → explore → report artifact
 - [x] Replay engine — parallel headless Playwright with per-flow video
 - [x] Explorer fleet — Cursor agents driving [agent-browser](https://github.com/vercel-labs/agent-browser) in isolated sessions, verify-before-map-entry
-- [x] Report viewer — verdict, tiers, embedded evidence
+- [x] Results published to Supabase (Lumen dashboard) — verdict, tiers, embedded evidence
 - [x] Guided setup (`autoend init`)
 - [ ] Heal-and-notify on replay failures
 - [ ] Report resolution actions (dismiss / reject / suppress)
@@ -193,7 +211,7 @@ The short version: exploration is LLM-latency-bound, so agents drive the browser
 npm install
 npm test              # vitest — includes a real browser replay integration test
 npm run build         # tsc → dist/
-npm run dev -- http://localhost:3000 -e low --no-open
+npm run dev -- http://localhost:3000 -e low
 ```
 
 ## License
