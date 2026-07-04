@@ -17,6 +17,15 @@ import { join } from 'node:path';
 /** Bump when the persisted shape of flow.json changes; enables migrations. */
 export const FLOW_SCHEMA_VERSION = 1;
 
+/** Max replay outcomes retained per Flow — enough for flakiness signals, bounded file size. */
+export const MAX_RECENT_RUNS = 20;
+
+/** One replay outcome appended to a Flow's run history (issue #14). */
+export interface FlowRunOutcome {
+  runId: string;
+  passed: boolean;
+}
+
 /**
  * The script a Flow had *before* its most recent Heal, retained so a Reject
  * (CONTEXT.md) can revert the Heal and refile the Flow as a Regression. A Heal
@@ -38,7 +47,13 @@ export interface FlowMeta {
   id: string;
   title: string;
   discoveredAt: string;
+  /** The Run that first verified and added this Flow to the map (issue #14). */
+  discoveredInRun?: string;
   lastPassedAt?: string;
+  /** Set when a replay fails; mirrors lastPassedAt on success (issue #14). */
+  lastFailedAt?: string;
+  /** Most recent replay outcomes, oldest dropped first beyond MAX_RECENT_RUNS (issue #14). */
+  recentRuns?: FlowRunOutcome[];
   /** Fingerprints of Suppressed Advisories attached to this Flow. */
   suppressedAdvisories?: string[];
   /** Present iff the Flow's script was Healed; consumed by Reject. */
@@ -109,6 +124,34 @@ async function writeMeta(repoRoot: string, meta: FlowMeta): Promise<void> {
 /** Update a Flow's metadata in place (e.g. lastPassedAt after a green replay). */
 export async function saveFlowMeta(repoRoot: string, meta: FlowMeta): Promise<void> {
   await writeMeta(repoRoot, meta);
+}
+
+/**
+ * Append a replay outcome to a Flow's history (issue #14). Pure — no I/O.
+ * Exported for tests.
+ */
+export function appendRunOutcome(meta: FlowMeta, runId: string, passed: boolean): FlowMeta {
+  const recentRuns = [...(meta.recentRuns ?? []), { runId, passed }];
+  if (recentRuns.length > MAX_RECENT_RUNS) {
+    recentRuns.splice(0, recentRuns.length - MAX_RECENT_RUNS);
+  }
+  const now = new Date().toISOString();
+  if (passed) {
+    return { ...meta, lastPassedAt: now, recentRuns };
+  }
+  return { ...meta, lastFailedAt: now, recentRuns };
+}
+
+/** Persist a replay outcome on the Flow Map (issue #14). */
+export async function recordFlowOutcome(
+  repoRoot: string,
+  meta: FlowMeta,
+  runId: string,
+  passed: boolean,
+): Promise<FlowMeta> {
+  const updated = appendRunOutcome(meta, runId, passed);
+  await saveFlowMeta(repoRoot, updated);
+  return { ...updated, schemaVersion: FLOW_SCHEMA_VERSION };
 }
 
 /**

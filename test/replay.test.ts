@@ -77,7 +77,7 @@ describe('replay engine', () => {
     const evidenceDir = join(repo, 'evidence');
     await mkdir(evidenceDir, { recursive: true });
 
-    const result = await replayFlowMap(repo, target, await listFlows(repo), evidenceDir);
+    const result = await replayFlowMap(repo, target, await listFlows(repo), evidenceDir, 'run-replay-test');
 
     expect(result.replayed).toBe(2);
 
@@ -94,10 +94,15 @@ describe('replay engine', () => {
       expect((await stat(join(evidenceDir, name))).size).toBeGreaterThan(0);
     }
 
-    // the green flow's baseline timestamp advanced; the broken one's did not
+    // the green flow's baseline timestamp advanced; the broken one's records failure
     const flows = await listFlows(repo);
-    expect(flows.find((f) => f.id === 'click-button')?.lastPassedAt).toBeDefined();
-    expect(flows.find((f) => f.id === 'broken-flow')?.lastPassedAt).toBeUndefined();
+    const passed = flows.find((f) => f.id === 'click-button');
+    const failed = flows.find((f) => f.id === 'broken-flow');
+    expect(passed?.lastPassedAt).toBeDefined();
+    expect(passed?.recentRuns?.at(-1)).toEqual({ runId: 'run-replay-test', passed: true });
+    expect(failed?.lastPassedAt).toBeUndefined();
+    expect(failed?.lastFailedAt).toBeDefined();
+    expect(failed?.recentRuns?.at(-1)).toEqual({ runId: 'run-replay-test', passed: false });
   }, 90_000);
 });
 
@@ -150,7 +155,7 @@ describe('flow capture', () => {
     await mkdir(evidenceDir, { recursive: true });
     const flows = await listFlows(repoRoot);
 
-    const result = await replayFlowMap(repoRoot, target, flows, evidenceDir);
+    const result = await replayFlowMap(repoRoot, target, flows, evidenceDir, 'run-snap-test');
     expect(result.flows).toHaveLength(2);
     expect(result.flows.find((f) => f.status === 'failed')).toBeDefined();
     const regression = result.findings[0];

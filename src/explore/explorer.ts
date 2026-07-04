@@ -2,7 +2,7 @@ import { access, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Agent } from '@cursor/sdk';
 import { chromium } from 'playwright';
-import { addFlow, type FlowMeta } from '../map/flow-map.js';
+import { addFlow, appendRunOutcome, type FlowMeta } from '../map/flow-map.js';
 import { runFlowScript } from '../replay/replay.js';
 import type { ExplorationBudget } from '../run/effort.js';
 import type { Finding, FlowSnapshot } from '../report/types.js';
@@ -13,6 +13,8 @@ export interface ExploreOptions {
   repoRoot: string;
   target: URL;
   budget: ExplorationBudget;
+  /** This Run's id — written into discovered flows' metadata (issue #14). */
+  runId: string;
   /** This Run's artifact directory — explorers get a scratch dir inside it. */
   runDir: string;
   evidenceDir: string;
@@ -106,13 +108,23 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
           const outcome = await runFlowScript(browser, scriptPath, opts.target, opts.evidenceDir, `discovered-${flow.id}`);
           if (outcome.ok) {
             const now = new Date().toISOString();
-            await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
+            const meta = appendRunOutcome(
+              {
+                id: flow.id,
+                title: flow.title,
+                discoveredAt: now,
+                discoveredInRun: opts.runId,
+              },
+              opts.runId,
+              true,
+            );
+            await addFlow(opts.repoRoot, meta, flow.script);
             flowSnapshots.push({
               id: flow.id,
               title: flow.title,
               status: 'discovered',
               discoveredAt: now,
-              lastPassedAt: now,
+              lastPassedAt: meta.lastPassedAt,
               timeline: outcome.timeline,
               evidence: outcome.evidence,
               durationMs: outcome.durationMs,

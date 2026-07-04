@@ -1,13 +1,16 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   FLOW_SCHEMA_VERSION,
+  MAX_RECENT_RUNS,
   addFlow,
+  appendRunOutcome,
   healFlow,
   listFlows,
   readFlowScript,
+  recordFlowOutcome,
   revertHeal,
   type FlowMeta,
 } from '../src/map/flow-map.js';
@@ -128,5 +131,74 @@ describe('flow schema (#10)', () => {
     const meta: FlowMeta = { id: 'checkout', title: 'Checkout', discoveredAt: now() };
     await addFlow(repo, meta, SCRIPT);
     await expect(revertHeal(repo, meta)).rejects.toThrow(/no Heal to revert/);
+  });
+});
+
+describe('flow run history (#14)', () => {
+  it('appendRunOutcome caps recentRuns at MAX_RECENT_RUNS', () => {
+    let meta: FlowMeta = { id: 'f', title: 'F', discoveredAt: now() };
+    for (let i = 0; i < MAX_RECENT_RUNS + 5; i += 1) {
+      meta = appendRunOutcome(meta, `run-${i}`, i % 2 === 0);
+    }
+    expect(meta.recentRuns).toHaveLength(MAX_RECENT_RUNS);
+    expect(meta.recentRuns![0].runId).toBe('run-5');
+    expect(meta.recentRuns!.at(-1)?.runId).toBe(`run-${MAX_RECENT_RUNS + 4}`);
+  });
+
+  it('recordFlowOutcome writes lastFailedAt on failure', async () => {
+    const repo = await tempRepo();
+    const meta: FlowMeta = { id: 'checkout', title: 'Checkout', discoveredAt: now() };
+    await addFlow(repo, meta, SCRIPT);
+
+    const updated = await recordFlowOutcome(repo, meta, 'run-fail', false);
+
+    expect(updated.lastFailedAt).toBeTypeOf('string');
+    expect(updated.lastPassedAt).toBeUndefined();
+    expect(updated.recentRuns).toEqual([{ runId: 'run-fail', passed: false }]);
+    const [persisted] = await listFlows(repo);
+    expect(persisted.lastFailedAt).toBe(updated.lastFailedAt);
+  });
+
+  it('recordFlowOutcome writes lastPassedAt and appends on success', async () => {
+    const repo = await tempRepo();
+    const meta: FlowMeta = { id: 'checkout', title: 'Checkout', discoveredAt: now() };
+    await addFlow(repo, meta, SCRIPT);
+
+    const updated = await recordFlowOutcome(repo, meta, 'run-pass', true);
+
+    expect(updated.lastPassedAt).toBeTypeOf('string');
+    expect(updated.recentRuns).toEqual([{ runId: 'run-pass', passed: true }]);
+  });
+
+  it('upgrades legacy flow.json without new fields on next replay write', async () => {
+    const repo = await tempRepo();
+    await mkdir(join(repo, '.autoend', 'flows', 'legacy'), { recursive: true });
+    await writeFile(
+      join(repo, '.autoend', 'flows', 'legacy', 'flow.json'),
+      JSON.stringify({ id: 'legacy', title: 'Legacy', discoveredAt: now() }),
+    );
+    await writeFile(join(repo, '.autoend', 'flows', 'legacy', 'flow.mts'), SCRIPT);
+
+    const [loaded] = await listFlows(repo);
+    const upgraded = await recordFlowOutcome(repo, loaded, 'run-upgrade', true);
+
+    expect(upgraded.schemaVersion).toBe(FLOW_SCHEMA_VERSION);
+    expect(upgraded.recentRuns).toEqual([{ runId: 'run-upgrade', passed: true }]);
+    const raw = JSON.parse(await readFile(join(repo, '.autoend', 'flows', 'legacy', 'flow.json'), 'utf8'));
+    expect(raw.schemaVersion).toBe(FLOW_SCHEMA_VERSION);
+  });
+
+  it('addFlow with discoveredInRun and initial recentRuns persists them', async () => {
+    const repo = await tempRepo();
+    const ts = now();
+    const meta = appendRunOutcome(
+      { id: 'new', title: 'New flow', discoveredAt: ts, discoveredInRun: 'run-discover' },
+      'run-discover',
+      true,
+    );
+    await addFlow(repo, meta, SCRIPT);
+    const [persisted] = await listFlows(repo);
+    expect(persisted.discoveredInRun).toBe('run-discover');
+    expect(persisted.recentRuns).toEqual([{ runId: 'run-discover', passed: true }]);
   });
 });
