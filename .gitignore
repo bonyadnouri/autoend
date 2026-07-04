@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.autoend/runs/
+.env
+excalidraw.log
