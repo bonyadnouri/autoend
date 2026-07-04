@@ -73,8 +73,20 @@ export async function listFlows(repoRoot: string): Promise<FlowMeta[]> {
     const metaPath = join(flowMapDir(repoRoot), entry.name, 'flow.json');
     try {
       const meta = JSON.parse(await readFile(metaPath, 'utf8')) as FlowMeta;
-      if (typeof meta?.id !== 'string' || typeof meta?.title !== 'string') {
+      if (
+        typeof meta?.id !== 'string' ||
+        typeof meta?.title !== 'string' ||
+        typeof meta?.discoveredAt !== 'string'
+      ) {
         console.warn(`skipping flow "${entry.name}": flow.json is missing required fields`);
+        continue;
+      }
+      // The directory name is the flow's address — downstream code locates
+      // flow.mts via join(flowMapDir, flow.id, ...). A mismatch (from a manual
+      // edit or a botched merge) would silently read the wrong folder, so treat
+      // it as malformed rather than trusting the drifted id.
+      if (meta.id !== entry.name) {
+        console.warn(`skipping flow "${entry.name}": flow.json id "${meta.id}" does not match its directory`);
         continue;
       }
       flows.push(meta);
@@ -87,7 +99,10 @@ export async function listFlows(repoRoot: string): Promise<FlowMeta[]> {
 }
 
 async function writeMeta(repoRoot: string, meta: FlowMeta): Promise<void> {
-  const stamped: FlowMeta = { schemaVersion: FLOW_SCHEMA_VERSION, ...meta };
+  // Stamp AFTER the spread so the current version always wins — a stale
+  // meta.schemaVersion must not survive a write, or migrations can never
+  // upgrade persisted metadata.
+  const stamped: FlowMeta = { ...meta, schemaVersion: FLOW_SCHEMA_VERSION };
   await writeFile(join(flowDir(repoRoot, meta.id), 'flow.json'), JSON.stringify(stamped, null, 2));
 }
 
