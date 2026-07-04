@@ -1,4 +1,5 @@
 import type { Effort } from '../run/effort.js';
+import type { InteractionGraph } from '../graph/graph.js';
 
 /**
  * Data model for a Run's Report. Mirrors CONTEXT.md — the glossary is
@@ -112,4 +113,6 @@ export interface RunArtifact {
   environment: Environment;
   findings: Finding[];
   heals: Heal[];
+  /** Interaction map derived from the Run's observed navigations (issue #16). */
+  graph?: InteractionGraph;
 }

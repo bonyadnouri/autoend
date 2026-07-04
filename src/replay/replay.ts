@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { flowMapDir, saveFlowMeta, type FlowMeta } from '../map/flow-map.js';
+import type { Transition } from '../graph/graph.js';
+import { pushVisit, transitionsFromVisits } from '../graph/record.js';
 import type {
   ConsoleEntry,
   Finding,
@@ -22,6 +24,8 @@ export interface ReplayResult {
   flows: FlowSnapshot[];
   /** Chromium build string, present when a browser was actually launched. */
   browserVersion?: string;
+  /** Observed navigations, for the interaction graph (issue #16). */
+  transitions: Transition[];
 }
 
 /**
@@ -50,6 +54,8 @@ export interface ScriptOutcome {
   timeline: StepResult[];
   screenshots: Screenshot[];
   durationMs: number;
+  /** Ordered main-frame URLs the Flow visited, for the interaction graph. */
+  visits: string[];
 }
 
 /**
@@ -75,6 +81,8 @@ export async function runFlowScript(
   const network: NetworkEntry[] = [];
   const timeline: StepResult[] = [];
   const screenshots: Screenshot[] = [];
+  // Ordered main-frame URLs, feeding the interaction graph (#16).
+  const visits: string[] = [];
 
   const screenshot = async (label: Screenshot['label'], file: string): Promise<void> => {
     try {
@@ -103,7 +111,10 @@ export async function runFlowScript(
       network.push({ method: req.method(), url: req.url(), status: 0, tMs: Date.now() - startedMs });
   });
   page.on('framenavigated', (frame) => {
-    if (frame !== page.mainFrame() || frame.url() === 'about:blank' || timeline.length >= CAPTURE_CAP) return;
+    if (frame !== page.mainFrame() || frame.url() === 'about:blank') return;
+    // Record every navigation for the graph, even past the timeline cap.
+    pushVisit(visits, frame.url());
+    if (timeline.length >= CAPTURE_CAP) return;
     const path = new URL(frame.url()).pathname;
     timeline.push({ label: `goto ${path}`, status: 'passed', tMs: Date.now() - startedMs });
   });
@@ -138,7 +149,7 @@ export async function runFlowScript(
     await rename(await video.path(), join(evidenceDir, evidence));
   }
   const durationMs = Date.now() - startedMs;
-  const capture = { console: consoleEntries, network, timeline, screenshots, durationMs, evidence };
+  const capture = { console: consoleEntries, network, timeline, screenshots, durationMs, visits, evidence };
   if (failure !== undefined) {
     return { ok: false, error: failure instanceof Error ? failure.message : String(failure), ...capture };
   }
@@ -157,8 +168,9 @@ export async function replayFlowMap(
   evidenceDir: string,
 ): Promise<ReplayResult> {
   if (flows.length === 0) {
-    return { replayed: 0, findings: [], heals: [], flows: [] };
+    return { replayed: 0, findings: [], heals: [], flows: [], transitions: [] };
   }
+  const transitions: Transition[] = [];
   const browser = await chromium.launch();
   try {
     const browserVersion = browser.version();
@@ -172,6 +184,7 @@ export async function replayFlowMap(
         async (flow): Promise<{ snapshot: FlowSnapshot; finding?: Finding }> => {
           const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
           const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
+          transitions.push(...transitionsFromVisits(outcome.visits));
           const snapshot: FlowSnapshot = {
             id: flow.id,
             title: flow.title,
@@ -212,6 +225,7 @@ export async function replayFlowMap(
       heals: [],
       flows: results.map((r) => r.snapshot),
       browserVersion,
+      transitions,
     };
   } finally {
     await browser.close();

@@ -147,5 +147,20 @@
       "summary": "Re-pointed the sign-in step at the renamed submit control after the login form was restructured",
       "evidence": "evidence.webm"
     }
-  ]
+  ],
+  "graph": {
+    "nodes": [
+      { "id": "/", "label": "/", "sampleUrls": ["https://demo.shopflow.app/"] },
+      { "id": "/login", "label": "/login", "sampleUrls": ["https://demo.shopflow.app/login"] },
+      { "id": "/dashboard", "label": "/dashboard", "sampleUrls": ["https://demo.shopflow.app/dashboard"] },
+      { "id": "/product/:id", "label": "/product/:id", "sampleUrls": ["https://demo.shopflow.app/product/42"] },
+      { "id": "/cart", "label": "/cart", "sampleUrls": ["https://demo.shopflow.app/cart"] }
+    ],
+    "edges": [
+      { "from": "/", "to": "/login", "action": "navigate", "count": 1 },
+      { "from": "/login", "to": "/dashboard", "action": "navigate", "count": 1 },
+      { "from": "/dashboard", "to": "/product/:id", "action": "navigate", "count": 2 },
+      { "from": "/product/:id", "to": "/cart", "action": "navigate", "count": 1 }
+    ]
+  }
 }

@@ -8,6 +8,7 @@ import { Flows } from "./pages/Flows";
 import { FlowDetails } from "./pages/FlowDetails";
 import { Findings } from "./pages/Findings";
 import { FindingDetails } from "./pages/FindingDetails";
+import { InteractionMap } from "./pages/InteractionMap";
 import { NotFound } from "./pages/NotFound";
 import { loadReport, ReportProvider } from "./data/report";
 
@@ -20,6 +21,7 @@ const router = createHashRouter([
       { path: "/flows/:id", element: <FlowDetails /> },
       { path: "/findings", element: <Findings /> },
       { path: "/findings/:id", element: <FindingDetails /> },
+      { path: "/map", element: <InteractionMap /> },
       { path: "*", element: <NotFound /> },
     ],
   },

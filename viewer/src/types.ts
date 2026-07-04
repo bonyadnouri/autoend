@@ -93,6 +93,24 @@ export interface Environment {
   autoendVersion: string;
 }
 
+export interface GraphNode {
+  id: string;
+  label: string;
+  sampleUrls: string[];
+}
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  action: string;
+  count: number;
+}
+
+export interface InteractionGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 /**
  * The self-contained record of one Run (ADR-0004): serialized as report.json
  * next to an evidence/ dir of WebM files. Portable — viewable anywhere;
@@ -110,4 +128,6 @@ export interface RunArtifact {
   environment: Environment;
   findings: Finding[];
   heals: Heal[];
+  /** Interaction map derived from the Run's observed navigations (issue #16). */
+  graph?: InteractionGraph;
 }

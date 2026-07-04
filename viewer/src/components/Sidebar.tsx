@@ -1,4 +1,4 @@
-import { LayoutDashboard, Route, ListChecks, Sparkles } from "lucide-react";
+import { LayoutDashboard, Route, ListChecks, Sparkles, GitBranch } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useReport } from "../data/report";
@@ -14,6 +14,7 @@ const navItems: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/flows", label: "Flows", icon: Route },
   { to: "/findings", label: "Findings", icon: ListChecks },
+  { to: "/map", label: "Interaction map", icon: GitBranch },
 ];
 
 export function Sidebar() {

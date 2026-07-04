@@ -4,6 +4,8 @@ import { Agent } from '@cursor/sdk';
 import { chromium } from 'playwright';
 import { addFlow, type FlowMeta } from '../map/flow-map.js';
 import { runFlowScript } from '../replay/replay.js';
+import type { Transition } from '../graph/graph.js';
+import { transitionsFromVisits } from '../graph/record.js';
 import type { ExplorationBudget } from '../run/effort.js';
 import type { Finding, FlowSnapshot } from '../report/types.js';
 import { withoutSensitiveEnv } from '../run/sensitive-env.js';
@@ -24,6 +26,8 @@ export interface ExplorationResult {
   findings: Finding[];
   /** A snapshot per newly discovered Flow — the Report's receipts (CONTEXT.md: Report). */
   flows: FlowSnapshot[];
+  /** Observed navigations from verifying discovered flows (issue #16). */
+  transitions: Transition[];
 }
 
 export interface ProposedFlow {
@@ -63,7 +67,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   const apiKey = process.env.CURSOR_API_KEY;
   if (!apiKey) {
     console.warn('exploration skipped: CURSOR_API_KEY not set — run `npx @bonyadnouri/autoend init`');
-    return { discovered: 0, findings: [], flows: [] };
+    return { discovered: 0, findings: [], flows: [], transitions: [] };
   }
 
   const workDir = join(opts.runDir, 'explore');
@@ -94,6 +98,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
 
   const proposed = collectProposedFlows(reports, opts.knownFlows);
   const flowSnapshots: FlowSnapshot[] = [];
+  const transitions: Transition[] = [];
   if (proposed.length > 0) {
     // Verify-by-running executes LLM-authored scripts in-process (ADR-0002).
     // Hide secrets from them for the duration (issue #3).
@@ -104,6 +109,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
           const scriptPath = join(workDir, `${flow.id}.mts`);
           await writeFile(scriptPath, flow.script);
           const outcome = await runFlowScript(browser, scriptPath, opts.target, opts.evidenceDir, `discovered-${flow.id}`);
+          transitions.push(...transitionsFromVisits(outcome.visits));
           if (outcome.ok) {
             const now = new Date().toISOString();
             await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
@@ -127,7 +133,7 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
     });
   }
 
-  return { discovered: flowSnapshots.length, findings, flows: flowSnapshots };
+  return { discovered: flowSnapshots.length, findings, flows: flowSnapshots, transitions };
 }
 
 async function runExplorer(

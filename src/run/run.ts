@@ -4,6 +4,7 @@ import { listFlows } from '../map/flow-map.js';
 import { explore, type ExplorationResult } from '../explore/explorer.js';
 import { replayFlowMap } from '../replay/replay.js';
 import { join } from 'node:path';
+import { buildGraph } from '../graph/graph.js';
 import { prepareRunDir, writeReport } from '../report/artifact.js';
 import type { Environment, Finding, RunArtifact } from '../report/types.js';
 import { EFFORT_BUDGETS, type Effort } from './effort.js';
@@ -80,6 +81,7 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
         },
       ],
       flows: [],
+      transitions: [],
     };
   }
 
@@ -93,6 +95,9 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
     node: process.version,
     autoendVersion: pkg.version,
   };
+
+  // Cluster every navigation observed this Run into the interaction map (#16).
+  const graph = buildGraph([...replay.transitions, ...exploration.transitions], opts.target);
 
   const artifact: RunArtifact = {
     runId,
@@ -109,6 +114,7 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
       await readSuppressedTitles(opts.repoRoot),
     ),
     heals: replay.heals,
+    graph,
   };
   await writeReport(dir, artifact);
   return { artifactDir: dir, artifact };
