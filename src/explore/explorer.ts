@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { extractJsonObject, runAgentJob } from '../agents/harness.js';
 import { addFlow, type FlowMeta } from '../map/flow-map.js';
 import { runFlowScript } from '../replay/replay.js';
+import type { RunReporter } from '../stream/index.js';
 import type { ExplorationBudget } from '../run/effort.js';
 import type { Finding, FlowSnapshot } from '../report/types.js';
 import { withoutSensitiveEnv } from '../run/sensitive-env.js';
@@ -20,6 +21,7 @@ export interface ExploreOptions {
   /** Resolved once per Run (ADR-0009: strong model everywhere). */
   model: string;
   apiKey: string;
+  reporter?: RunReporter;
 }
 
 export interface ExplorationResult {
@@ -174,7 +176,7 @@ export async function collectReportedFindings(
  */
 export async function admitProposedFlows(
   proposed: ProposedFlow[],
-  opts: Pick<ExploreOptions, 'repoRoot' | 'target' | 'evidenceDir'>,
+  opts: Pick<ExploreOptions, 'repoRoot' | 'target' | 'evidenceDir' | 'reporter'>,
   workDir: string,
 ): Promise<FlowSnapshot[]> {
   const flowSnapshots: FlowSnapshot[] = [];
@@ -185,7 +187,12 @@ export async function admitProposedFlows(
       for (const flow of proposed) {
         const scriptPath = join(workDir, `${flow.id}.mts`);
         await writeFile(scriptPath, flow.script);
-        const outcome = await runFlowScript(browser, scriptPath, opts.target, opts.evidenceDir, `discovered-${flow.id}`);
+        const outcome = await runFlowScript(browser, scriptPath, opts.target, opts.evidenceDir, `discovered-${flow.id}`, {
+          reporter: opts.reporter,
+          flowId: flow.id,
+          flowTitle: flow.title,
+          discover: true,
+        });
         if (outcome.ok) {
           const now = new Date().toISOString();
           await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);

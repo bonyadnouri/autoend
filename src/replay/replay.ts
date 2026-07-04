@@ -13,6 +13,8 @@ import type {
   StepResult,
 } from '../report/types.js';
 import { withoutSensitiveEnv } from '../run/sensitive-env.js';
+import { NoopReporter, type RunReporter } from '../stream/index.js';
+import { edgeId, screenId, screenTitle } from '../stream/screen-id.js';
 
 export interface ReplayResult {
   replayed: number;
@@ -40,6 +42,14 @@ const REPLAY_WORKERS = 4;
 const VIEWPORT = { width: 1280, height: 720 };
 const CAPTURE_CAP = 50; // per stream; drop beyond, note nothing — caps keep report.json bounded
 
+export interface FlowStreamContext {
+  reporter?: RunReporter;
+  flowId?: string;
+  flowTitle?: string;
+  /** Mark navigated screens as newly discovered (exploration verify pass). */
+  discover?: boolean;
+}
+
 export interface ScriptOutcome {
   ok: boolean;
   error?: string;
@@ -50,6 +60,7 @@ export interface ScriptOutcome {
   timeline: StepResult[];
   screenshots: Screenshot[];
   durationMs: number;
+  visitedScreenIds: string[];
 }
 
 /**
@@ -65,7 +76,11 @@ export async function runFlowScript(
   target: URL,
   evidenceDir: string,
   videoBase: string,
+  stream: FlowStreamContext = {},
 ): Promise<ScriptOutcome> {
+  const reporter = stream.reporter ?? NoopReporter;
+  let prevScreenId: string | undefined;
+  const visitedScreenIds: string[] = [];
   const context = await browser.newContext({ recordVideo: { dir: evidenceDir }, viewport: VIEWPORT });
   // TODO: inject shared storage state (src/auth/session.ts) once fleet auth exists.
   const page = await context.newPage();
@@ -106,6 +121,30 @@ export async function runFlowScript(
     if (frame !== page.mainFrame() || frame.url() === 'about:blank' || timeline.length >= CAPTURE_CAP) return;
     const path = new URL(frame.url()).pathname;
     timeline.push({ label: `goto ${path}`, status: 'passed', tMs: Date.now() - startedMs });
+    const sid = screenId(frame.url());
+    if (!visitedScreenIds.includes(sid)) visitedScreenIds.push(sid);
+    void reporter.screenSeen({
+      id: sid,
+      path: sid,
+      title: screenTitle(sid),
+      status: 'running',
+    });
+    void reporter.event({
+      type: 'screen',
+      screenId: sid,
+      path: sid,
+      state: stream.discover ? 'discovered' : 'visited',
+    });
+    if (prevScreenId && prevScreenId !== sid) {
+      void reporter.edgeSeen({
+        id: edgeId(prevScreenId, sid),
+        source: prevScreenId,
+        target: sid,
+        label: stream.flowTitle ?? `goto ${path}`,
+        status: 'normal',
+      });
+    }
+    prevScreenId = sid;
   });
   // First main-frame load → the "before" screenshot; awaited below so it always precedes "after".
   let beforeShot: Promise<void> | undefined;
@@ -138,11 +177,15 @@ export async function runFlowScript(
     await rename(await video.path(), join(evidenceDir, evidence));
   }
   const durationMs = Date.now() - startedMs;
-  const capture = { console: consoleEntries, network, timeline, screenshots, durationMs, evidence };
+  const capture = { console: consoleEntries, network, timeline, screenshots, durationMs, evidence, visitedScreenIds };
   if (failure !== undefined) {
     return { ok: false, error: failure instanceof Error ? failure.message : String(failure), ...capture };
   }
   return { ok: true, ...capture };
+}
+
+export interface ReplayStreamContext {
+  reporter?: RunReporter;
 }
 
 /**
@@ -155,10 +198,13 @@ export async function replayFlowMap(
   target: URL,
   flows: FlowMeta[],
   evidenceDir: string,
+  stream: ReplayStreamContext = {},
 ): Promise<ReplayResult> {
+  const reporter = stream.reporter ?? NoopReporter;
   if (flows.length === 0) {
     return { replayed: 0, findings: [], heals: [], flows: [] };
   }
+  await reporter.event({ type: 'phase', phase: 'replay', state: 'started' });
   const browser = await chromium.launch();
   try {
     const browserVersion = browser.version();
@@ -171,7 +217,20 @@ export async function replayFlowMap(
         REPLAY_WORKERS,
         async (flow): Promise<{ snapshot: FlowSnapshot; finding?: Finding }> => {
           const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
-          const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id);
+          await reporter.event({ type: 'flow', flowId: flow.id, title: flow.title, state: 'started' });
+          await reporter.testStatus({ testId: flow.id, title: flow.title, status: 'running' });
+          const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id, {
+            reporter,
+            flowId: flow.id,
+            flowTitle: flow.title,
+          });
+          const settleScreens = async (status: 'passed' | 'failed') => {
+            const ids = outcome.visitedScreenIds;
+            for (let i = 0; i < ids.length; i++) {
+              const screenStatus = status === 'failed' && i === ids.length - 1 ? 'failed' : 'passed';
+              await reporter.screenSeen({ id: ids[i]!, path: ids[i]!, status: screenStatus });
+            }
+          };
           const snapshot: FlowSnapshot = {
             id: flow.id,
             title: flow.title,
@@ -183,6 +242,18 @@ export async function replayFlowMap(
             durationMs: outcome.durationMs,
           };
           if (!outcome.ok) {
+            await settleScreens('failed');
+            await reporter.testStatus({
+              testId: flow.id,
+              title: flow.title,
+              status: 'failed',
+              detail: outcome.error ?? 'unknown failure',
+              console: outcome.console,
+              network: outcome.network,
+              timeline: outcome.timeline,
+              durationMs: outcome.durationMs,
+            });
+            await reporter.event({ type: 'flow', flowId: flow.id, title: flow.title, state: 'failed' });
             // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
             // before reporting. Until healing exists, every failure is a Regression.
             const finding: Finding = {
@@ -199,6 +270,15 @@ export async function replayFlowMap(
             };
             return { snapshot, finding };
           }
+          await settleScreens('passed');
+          await reporter.testStatus({
+            testId: flow.id,
+            title: flow.title,
+            status: 'passed',
+            durationMs: outcome.durationMs,
+            timeline: outcome.timeline,
+          });
+          await reporter.event({ type: 'flow', flowId: flow.id, title: flow.title, state: 'passed' });
           const lastPassedAt = new Date().toISOString();
           await saveFlowMeta(repoRoot, { ...flow, lastPassedAt });
           snapshot.lastPassedAt = lastPassedAt;
@@ -206,6 +286,7 @@ export async function replayFlowMap(
         },
       ),
     );
+    await reporter.event({ type: 'phase', phase: 'replay', state: 'finished' });
     return {
       replayed: flows.length,
       findings: results.map((r) => r.finding).filter((f): f is Finding => f !== undefined),
