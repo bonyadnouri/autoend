@@ -15,6 +15,7 @@ export interface RunRequest {
 
 export interface RunQueue {
   claimNext(): Promise<RunRequest | null>;
+  cancelStale(): Promise<number>;
   markFinished(runId: string, summary: RunSummary): Promise<void>;
   markFailed(runId: string, error: string): Promise<void>;
   watch(onNew: () => void): () => void;
@@ -67,6 +68,29 @@ export class SupabaseQueue implements RunQueue {
       effort: (claimed.effort as Effort | null) ?? undefined,
       model: (claimed.model as string | null) ?? undefined,
     };
+  }
+
+  /**
+   * Cancel runs left over from a previous session so a freshly started daemon
+   * begins idle and only executes runs requested after it came up. Without this,
+   * startup would immediately claim anything still `queued` — or orphaned as
+   * `running` by a daemon that was killed mid-run — and execute it, which looks
+   * like the daemon "randomly" starting a run nobody asked for. Scoped to this
+   * daemon's analysis when one is configured; otherwise it clears every project.
+   */
+  async cancelStale(): Promise<number> {
+    let pending = this.supabase
+      .from('runs')
+      .update({
+        status: 'cancelled',
+        finished_at: new Date().toISOString(),
+        error: 'cancelled on daemon restart',
+      })
+      .in('status', ['queued', 'running']);
+    if (this.analysisId) pending = pending.eq('analysis_id', this.analysisId);
+    const { data, error } = await pending.select('id');
+    if (error) throw error;
+    return data?.length ?? 0;
   }
 
   async markFinished(runId: string, summary: RunSummary): Promise<void> {

@@ -137,6 +137,18 @@ export async function runServe(opts: ServeOptions): Promise<never> {
       pc.dim(` · watching ${scopedAnalysisId ? `analysis ${scopedAnalysisId}` : 'all projects'}`),
   );
 
+  // Start idle: cancel any run left over from a previous session so the daemon
+  // waits for a fresh request instead of immediately executing a stale queued
+  // (or orphaned running) run that the user never asked to re-run.
+  const cleared = await queue.cancelStale().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(pc.yellow(`could not clear stale runs: ${message}`));
+    return 0;
+  });
+  if (cleared > 0) {
+    console.log(pc.dim(`cleared ${cleared} stale run(s) from a previous session`));
+  }
+
   // Publish the live model list up front (best-effort) so the UI picker is ready.
   await publishModels(supabase).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
