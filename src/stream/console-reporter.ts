@@ -36,6 +36,9 @@ export class ConsoleReporter implements RunReporter {
   }
 
   async screenSeen(): Promise<void> {}
+  async screenDropped(id: string): Promise<void> {
+    console.log(pc.dim('  ') + pc.yellow(`screen dropped (404) ${id}`));
+  }
   async edgeSeen(): Promise<void> {}
   async testStatus(): Promise<void> {}
 }

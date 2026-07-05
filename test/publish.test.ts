@@ -290,8 +290,10 @@ describe('publishRun', () => {
   });
 
   it('N3: a failed upsert never prunes the previous run (throws before delete)', async () => {
-    h.state.failUpsertOn = 'tests';
-    await expect(publishRun(makeArtifact(), NO_EVIDENCE_DIR)).rejects.toThrow(/upsert tests/);
+    // Fail the first table publishRun writes (journeys) so the very first upsert
+    // throws before any delete runs anywhere — replaceRows upserts before it prunes.
+    h.state.failUpsertOn = 'journeys';
+    await expect(publishRun(makeArtifact(), NO_EVIDENCE_DIR)).rejects.toThrow(/upsert journeys/);
     expect(h.ops.some((o) => o.op === 'delete')).toBe(false);
   });
 

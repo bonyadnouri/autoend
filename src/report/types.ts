@@ -41,7 +41,8 @@ export interface Diagnosis {
 }
 
 export interface ConsoleEntry {
-  level: 'error' | 'warning';
+  /** Normalized console message tier; non-error tiers give the run's full log. */
+  level: 'error' | 'warning' | 'info' | 'debug' | 'log';
   text: string;
   /** Milliseconds since the Flow's execution started. */
   tMs: number;
@@ -53,6 +54,8 @@ export interface NetworkEntry {
   /** HTTP status; 0 = request failed/aborted before a response. */
   status: number;
   tMs: number;
+  /** Round-trip time in ms when Playwright timing is available. */
+  durationMs?: number;
 }
 
 export interface StepResult {
@@ -108,6 +111,10 @@ export interface FlowSnapshot {
   timeline?: StepResult[];
   evidence?: string;
   durationMs?: number;
+  /** Console output captured while running the flow (all tiers, capped). */
+  console?: ConsoleEntry[];
+  /** Endpoint requests captured while running the flow (capped). */
+  network?: NetworkEntry[];
   /** The executable Playwright flow script — the concrete, portable reproduction. */
   script?: string;
 }

@@ -7,6 +7,7 @@ export const NoopReporter: RunReporter = {
   runFinished: noop,
   event: noop,
   screenSeen: noop,
+  screenDropped: noop,
   edgeSeen: noop,
   testStatus: noop,
 };

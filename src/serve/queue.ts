@@ -9,6 +9,8 @@ export interface RunRequest {
   testId?: string;
   targetUrl?: string;
   effort?: Effort;
+  /** Cursor model id chosen in the UI for this run; absent = daemon default. */
+  model?: string;
 }
 
 export interface RunQueue {
@@ -29,7 +31,7 @@ export class SupabaseQueue implements RunQueue {
   async claimNext(): Promise<RunRequest | null> {
     const { data: queued, error: selectError } = await this.supabase
       .from('runs')
-      .select('id, kind, test_id, target_url, effort')
+      .select('id, kind, test_id, target_url, effort, model')
       .eq('analysis_id', this.analysisId)
       .eq('status', 'queued')
       .order('requested_at', { ascending: true })
@@ -43,7 +45,7 @@ export class SupabaseQueue implements RunQueue {
       .update({ status: 'running', started_at: new Date().toISOString() })
       .eq('id', queued.id)
       .eq('status', 'queued')
-      .select('id, kind, test_id, target_url, effort')
+      .select('id, kind, test_id, target_url, effort, model')
       .maybeSingle();
     if (updateError) throw updateError;
     if (!claimed) return null;
@@ -55,6 +57,7 @@ export class SupabaseQueue implements RunQueue {
       testId: claimed.test_id ?? undefined,
       targetUrl: claimed.target_url ?? undefined,
       effort: (claimed.effort as Effort | null) ?? undefined,
+      model: (claimed.model as string | null) ?? undefined,
     };
   }
 

@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Finding, FlowSnapshot, RunArtifact, StepResult } from '../report/types.js';
+import type { ConsoleEntry, Finding, FlowSnapshot, NetworkEntry, RunArtifact, StepResult } from '../report/types.js';
 import { uploadEvidence } from './evidence.js';
 import { ANALYSIS_ID, getSupabase } from './supabase-client.js';
 
@@ -22,7 +22,7 @@ interface TestRow {
   steps: Array<{ action: string; expected: string }>;
   expected_result: string;
   actual_result: string;
-  status: 'pass' | 'fail' | 'not-executed';
+  status: 'pass' | 'fail' | 'warning' | 'not-executed';
   duration_ms: number;
   related_issue_ids: string[];
   has_investigation: boolean;
@@ -45,6 +45,17 @@ interface IssueRow {
   status: 'open';
 }
 
+interface JourneyRow {
+  id: string;
+  analysis_id: string;
+  name: string;
+  description: string;
+  status: 'healthy' | 'warning' | 'broken';
+  coverage: number;
+  steps: Array<{ screenId: string; action: string }>;
+  test_case_ids: string[];
+}
+
 interface InsightRow {
   id: string;
   analysis_id: string;
@@ -62,6 +73,8 @@ interface InsightRow {
   related_screen_id: string | null;
   related_journey_id: string | null;
   issue_id: string | null;
+  /** Actionable next step for a developer — the "so what do I do" of an insight. */
+  suggested_fix: string;
 }
 
 interface InvestigationRow {
@@ -88,14 +101,58 @@ function subjectId(finding: Finding): string {
   return finding.flowId ?? finding.id;
 }
 
-/** A non-advisory Finding without a Flow reads as a failed test in the UI. */
+/**
+ * A Finding without a Flow becomes a synthetic test so its evidence is reachable.
+ * Its status reflects severity, never execution: hard-failures/defects/regressions
+ * are failures; advisories were still observed (they carry evidence), so they're
+ * a 'warning', not 'not-executed'. 'not-executed' is reserved for tests that
+ * genuinely never ran.
+ */
 function findingTestStatus(kind: Finding['kind']): TestRow['status'] {
-  return kind === 'advisory' ? 'not-executed' : 'fail';
+  return kind === 'advisory' ? 'warning' : 'fail';
 }
 
 /** Turn a run timeline into a numbered, human-readable reproduction recipe. */
 function reproSteps(timeline: StepResult[] | undefined): string[] {
   return (timeline ?? []).map((step, index) => `${index + 1}. ${step.label}`);
+}
+
+/** Best-effort screen id (path) embedded in a timeline label like "goto /login". */
+function screenIdFromLabel(label: string): string {
+  const match = /(\/[^\s]*)/.exec(label);
+  return match ? match[1] : '';
+}
+
+/** A Flow's timeline as ordered Journey steps, each pinned to the screen it touched. */
+function journeySteps(timeline: StepResult[] | undefined): JourneyRow['steps'] {
+  return (timeline ?? []).map((step) => ({
+    screenId: screenIdFromLabel(step.label),
+    action: step.label,
+  }));
+}
+
+/**
+ * Every verified Flow is a user Journey in the UI: a named path through the app
+ * with a coverage score and a back-reference to its test. Failed flows surface
+ * as broken journeys so the graph shows where a path regressed. Journeys share
+ * their Flow's id, which is exactly what each test's `journey_id` points at.
+ */
+function buildJourneys(artifact: RunArtifact): JourneyRow[] {
+  return artifact.flows.map((flow) => ({
+    id: flow.id,
+    analysis_id: ANALYSIS_ID,
+    name: flow.title,
+    description:
+      flow.status === 'discovered'
+        ? 'Discovered during exploration'
+        : flow.status === 'failed'
+          ? 'Regressed during this run'
+          : 'Verified user flow',
+    status: flow.status === 'failed' ? 'broken' : 'healthy',
+    coverage: flow.status === 'failed' ? 0 : 100,
+    steps: journeySteps(flow.timeline),
+    test_case_ids: [flow.id],
+  }));
 }
 
 function severity(kind: Finding['kind']): IssueRow['severity'] {
@@ -126,6 +183,38 @@ function evidenceLabel(label: string): string {
   return 'At failure';
 }
 
+/** Map a captured console tier to the Lumen LogEntry level (types/index.ts). */
+function logLevel(level: ConsoleEntry['level']): 'error' | 'warn' | 'info' | 'debug' {
+  if (level === 'error') return 'error';
+  if (level === 'warning') return 'warn';
+  if (level === 'debug') return 'debug';
+  return 'info';
+}
+
+/** Captured console entries → Lumen LogEntry rows (the investigation's Logs tab). */
+function logRows(entries: ConsoleEntry[] | undefined): Array<Record<string, unknown>> {
+  return (entries ?? []).map((entry, index) => ({
+    id: `log-${index}`,
+    level: logLevel(entry.level),
+    source: 'console',
+    tMs: entry.tMs,
+    message: entry.text,
+  }));
+}
+
+/** Captured endpoint requests → Lumen NetworkRequest rows (the Network tab). */
+function networkRows(entries: NetworkEntry[] | undefined): Array<Record<string, unknown>> {
+  return (entries ?? []).map((entry, index) => ({
+    id: `net-${index}`,
+    method: entry.method.toUpperCase(),
+    endpoint: entry.url,
+    status: entry.status,
+    durationMs: entry.durationMs ?? 0,
+    failed: entry.status === 0 || entry.status >= 400,
+    tMs: entry.tMs,
+  }));
+}
+
 function appName(target: string): string {
   try {
     return new URL(target).host;
@@ -150,7 +239,8 @@ function buildTests(artifact: RunArtifact, investigatedIds: Set<string>): TestRo
       id: flow.id,
       analysis_id: ANALYSIS_ID,
       name: flow.title,
-      journey_id: '',
+      // Each Flow-backed test belongs to the Journey built from the same Flow.
+      journey_id: flow.id,
       screen_ids: [],
       preconditions: [],
       steps: (flow.timeline ?? []).map((step) => ({
@@ -210,6 +300,31 @@ function insightCategory(kind: Finding['kind']): InsightRow['category'] {
 }
 
 /**
+ * A concrete next step for the reader. Prefers an agent-provided fix (a
+ * Diagnosis carries the filing agent's judgment); otherwise derives a sensible
+ * default from the finding's kind/shape so every insight is actionable.
+ */
+function suggestedFix(finding: Finding): string {
+  const agentFix = finding.diagnosis?.rootCause?.trim();
+  if (agentFix) return agentFix;
+  if (finding.title.startsWith('Expected page')) {
+    return 'Create the missing page, or remove/redirect the link that points to it so users never hit a dead end.';
+  }
+  switch (finding.kind) {
+    case 'regression':
+      return 'Restore this flow: it worked before and fails now — review the recent change that broke this path.';
+    case 'hard-failure':
+      return 'Fix the server/page error surfaced in the logs and network panel before shipping.';
+    case 'defect':
+      return finding.expectation?.statement
+        ? `Align the behavior with the expectation: ${finding.expectation.statement}`
+        : 'Correct the behavior so it matches the documented/expected outcome.';
+    default:
+      return 'Review this observation and address it if it affects the user experience.';
+  }
+}
+
+/**
  * Insights are the analysis-level readout the UI's Insights page renders. Each
  * Finding produces one, linked back to its Issue so a reader can pivot from the
  * high-level observation to the concrete issue and its investigation. Advisories
@@ -227,6 +342,7 @@ function buildInsights(artifact: RunArtifact): InsightRow[] {
     related_screen_id: null,
     related_journey_id: null,
     issue_id: finding.id,
+    suggested_fix: suggestedFix(finding),
   }));
 }
 
@@ -295,22 +411,8 @@ function buildInvestigations(
         tMs: shot.tMs,
         imageUrl: evidenceUrl(urls, shot.file),
       })),
-      network: (finding.network ?? []).map((entry, index) => ({
-        id: `net-${index}`,
-        method: entry.method.toUpperCase(),
-        endpoint: entry.url,
-        status: entry.status,
-        durationMs: 0,
-        failed: entry.status === 0 || entry.status >= 400,
-        tMs: entry.tMs,
-      })),
-      logs: (finding.console ?? []).map((entry, index) => ({
-        id: `log-${index}`,
-        level: entry.level === 'warning' ? 'warn' : 'error',
-        source: 'console',
-        tMs: entry.tMs,
-        message: entry.text,
-      })),
+      network: networkRows(finding.network),
+      logs: logRows(finding.console),
       timeline: (finding.timeline ?? []).map((step) => ({
         tMs: step.tMs,
         screenId: '',
@@ -368,8 +470,8 @@ function buildInvestigations(
           tMs: 0,
           imageUrl: evidenceUrl(urls, shot.file),
         })),
-        network: [],
-        logs: [],
+        network: networkRows(flow.network),
+        logs: logRows(flow.console),
         timeline: (flow.timeline ?? []).map((step) => ({
           tMs: step.tMs,
           screenId: '',
@@ -393,21 +495,33 @@ function buildInvestigations(
   return [...byFlow.values()];
 }
 
-/** Partial summary — only the columns a Run knows; mock columns are preserved. */
-function buildSummary(artifact: RunArtifact) {
-  // 'discovered' flows were verified by running them, so they count as passed.
-  const passed = artifact.flows.filter((f) => f.status === 'passed' || f.status === 'discovered').length;
-  const failed = artifact.flows.filter((f) => f.status === 'failed').length;
+/**
+ * Partial summary — only the columns a Run knows; mock columns are preserved.
+ * Counts come from the actual published `tests` rows (flows + finding-derived
+ * synthetics), not from `artifact.flows` alone, so a run's fail/not-executed
+ * tallies match what the UI lists. Screens are counted from what the streaming
+ * reporter already wrote (publish never touches the `screens` table).
+ */
+function buildSummary(
+  artifact: RunArtifact,
+  tests: TestRow[],
+  journeys: JourneyRow[],
+  screensDiscovered: number,
+) {
+  const passed = tests.filter((t) => t.status === 'pass').length;
+  const failed = tests.filter((t) => t.status === 'fail').length;
+  const notExecuted = tests.filter((t) => t.status === 'not-executed').length;
   const critical = artifact.findings.filter((f) => f.kind === 'hard-failure').length;
   return {
     app_name: appName(artifact.target),
     app_url: artifact.target,
     analyzed_at: artifact.finishedAt ?? artifact.startedAt,
-    user_flows: artifact.flows.length,
+    user_flows: journeys.length,
+    screens_discovered: screensDiscovered,
     tests_executed: passed + failed,
     tests_passed: passed,
     tests_failed: failed,
-    tests_not_executed: 0,
+    tests_not_executed: notExecuted,
     critical_issues: critical,
   };
 }
@@ -461,18 +575,28 @@ export async function publishRun(
   const investigatedIds = new Set(investigations.map((row) => row.test_id));
   const tests = buildTests(artifact, investigatedIds);
   const issues = buildIssues(artifact);
+  const journeys = buildJourneys(artifact);
 
   // Upsert fresh rows, then prune the previous Run's stale ones. Order matters:
   // new data lands before old data leaves, so a failure never empties the run.
   const asRows = <T>(rows: T[]): Array<Record<string, unknown>> =>
     rows as unknown as Array<Record<string, unknown>>;
+  await replaceRows(supabase, 'journeys', 'id', asRows(journeys));
   await replaceRows(supabase, 'tests', 'id', asRows(tests));
   await replaceRows(supabase, 'issues', 'id', asRows(issues));
   await replaceRows(supabase, 'investigations', 'test_id', asRows(investigations));
   await replaceRows(supabase, 'insights', 'id', asRows(buildInsights(artifact)));
 
+  // Screens are streamed live by the reporter; count them for the summary
+  // (publish itself never writes the screens table).
+  const { count: screenCount, error: screenCountError } = await supabase
+    .from('screens')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_id', ANALYSIS_ID);
+  throwOnError('count screens', screenCountError);
+
   // Commit marker: write the summary last so the UI flips to this Run atomically.
-  const summary = buildSummary(artifact);
+  const summary = buildSummary(artifact, tests, journeys, screenCount ?? 0);
   const { data: existing, error: selectError } = await supabase
     .from('analyses')
     .select('id')
@@ -492,7 +616,6 @@ export async function publishRun(
         await supabase.from('analyses').insert({
           id: ANALYSIS_ID,
           ...summary,
-          screens_discovered: 0,
           coverage_percent: 0,
           exploration_log: [],
           exploration_screen_order: [],

@@ -29,6 +29,10 @@ export class CompositeReporter implements RunReporter {
     await Promise.all(this.reporters.map((r) => safe(r, 'screenSeen', [screen])));
   }
 
+  async screenDropped(id: string): Promise<void> {
+    await Promise.all(this.reporters.map((r) => safe(r, 'screenDropped', [id])));
+  }
+
   async edgeSeen(edge: EdgeFact): Promise<void> {
     await Promise.all(this.reporters.map((r) => safe(r, 'edgeSeen', [edge])));
   }

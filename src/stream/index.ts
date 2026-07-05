@@ -13,6 +13,7 @@ export type {
   RunReporter,
   RunStartedInfo,
   RunSummary,
+  ScreenElement,
   ScreenFact,
   ScreenStatus,
   TestRunStatus,

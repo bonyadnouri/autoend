@@ -8,13 +8,6 @@ import { Agent, Cursor } from '@cursor/sdk';
  * (ADR-0003 consequences).
  */
 
-/**
- * Cloud agents must clone a repo even when the job never touches it (autoend
- * explorers only need the VM's shell + browser). The public autoend repo is a
- * cheap, safe default clone target.
- */
-export const DEFAULT_CLOUD_REPO = 'https://github.com/bonyadnouri/autoend';
-
 export type AgentRuntime = 'local' | 'cloud';
 
 export interface AgentJob {
@@ -30,7 +23,13 @@ export interface AgentJob {
   timeoutMs: number;
   /** Where the agent executes; default 'local'. Cloud = Cursor-hosted Linux VM. */
   runtime?: AgentRuntime;
-  /** Repo URL a cloud agent clones (cloud VMs require one); ignored for local. */
+  /**
+   * Optional repo a cloud agent clones into its VM. Autoend explorers only need
+   * the VM's shell + browser, so cloud runs are repo-less by default. Supply
+   * this ONLY to clone a repo the Cursor account has connected via its GitHub
+   * App — an unconnected/arbitrary URL fails with "Failed to determine
+   * repository default branch". Ignored for local runtime.
+   */
   cloudRepo?: string;
 }
 
@@ -45,9 +44,12 @@ export async function runAgentJob(job: AgentJob): Promise<string | undefined> {
   try {
     // Always set local or cloud explicitly — the SDK silently defaults to
     // local when neither is present, which would mask a misconfigured runtime.
+    // Cloud is repo-less unless a connected repo is explicitly configured:
+    // explorers just need the VM's shell + browser, and passing an unconnected
+    // repo URL fails the whole job at send() (default-branch lookup).
     const placement =
       job.runtime === 'cloud'
-        ? { cloud: { repos: [{ url: job.cloudRepo ?? DEFAULT_CLOUD_REPO }] } }
+        ? { cloud: job.cloudRepo ? { repos: [{ url: job.cloudRepo }] } : {} }
         : { local: { cwd: job.cwd } };
     const agent = await Agent.create({
       name: job.name,
@@ -90,6 +92,45 @@ export async function runAgentJob(job: AgentJob): Promise<string | undefined> {
  * against `Cursor.models.list()` ids and aliases; first hit wins.
  */
 const STRONG_MODEL_PREFERENCE: RegExp[] = [/opus/i, /gpt-?5/i, /sonnet/i, /gemini.*pro/i, /grok/i];
+
+/** Rank a model id/aliases against the strong-first preference; lower = stronger. */
+function modelRank(id: string, aliases: string[] = []): number {
+  for (let i = 0; i < STRONG_MODEL_PREFERENCE.length; i++) {
+    const p = STRONG_MODEL_PREFERENCE[i]!;
+    if (p.test(id) || aliases.some((a) => p.test(a))) return i;
+  }
+  return STRONG_MODEL_PREFERENCE.length;
+}
+
+export interface AvailableModel {
+  id: string;
+  label: string;
+  /** True for the model resolveModel would pick by default (strongest available). */
+  isDefault: boolean;
+}
+
+/**
+ * List the Cursor models available to this account, strong-first, flagging the
+ * one autoend would pick by default. Powers the UI model picker (the daemon
+ * publishes this to Supabase so Lumen can offer a real, live choice). Returns []
+ * when the SDK can't be reached — callers degrade to auto-resolution.
+ */
+export async function listAvailableModels(apiKey: string): Promise<AvailableModel[]> {
+  let models: Array<{ id: string; aliases?: string[] }> = [];
+  try {
+    models = await Cursor.models.list({ apiKey });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`could not list Cursor models (${message})`);
+    return [];
+  }
+  const ranked = [...models].sort(
+    (a, b) => modelRank(a.id, a.aliases) - modelRank(b.id, b.aliases),
+  );
+  const defaultId = ranked.find((m) => modelRank(m.id, m.aliases) < STRONG_MODEL_PREFERENCE.length)?.id
+    ?? ranked[0]?.id;
+  return ranked.map((m) => ({ id: m.id, label: m.id, isDefault: m.id === defaultId }));
+}
 
 /**
  * Resolve the model every role runs this Run. Order: explicit override

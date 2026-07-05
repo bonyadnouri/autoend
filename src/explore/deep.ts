@@ -6,10 +6,12 @@ import {
   admitProposedFlows,
   collectProposedFlows,
   collectReportedFindings,
+  emitReportedScreens,
   explorerBrowserProtocol,
   flowScriptRules,
   hardRules,
   runExplorer,
+  screenCaptureRules,
   GRACE_MS,
   type CandidateDefect,
   type ExploreOptions,
@@ -93,6 +95,7 @@ export async function exploreDeep(opts: DeepExploreOptions): Promise<DeepExplora
 
   await saveLeads(opts.repoRoot, dedupeLeads(unconsumed));
 
+  await emitReportedScreens(reports, opts);
   const proposed = collectProposedFlows(reports, opts.knownFlows);
   const flows = await admitProposedFlows(proposed, opts, workDir);
   const candidates = dedupeCandidates(reports.flatMap((r) => r?.candidates ?? []));
@@ -202,18 +205,20 @@ ${hardRules(target.origin)}
 ## What to produce
 1. ${flowScriptRules(knownFlows)}
 2. FINDINGS —
-   - kind "hard-failure": objective breakage only (console/page errors, HTTP >= 400 responses, crashes, blank pages). Include the exact error output in detail.
-   - kind "advisory": your judgment on UX, accessibility, or speed. Be sparing; only what a developer would thank you for.
-3. CANDIDATES — suspected SEMANTIC bugs: the page renders and returns 200, but the behavior is wrong (wrong data, wrong order, lost state, a control that does nothing). Do NOT file these as findings — an independent Verifier will re-execute your repro in a fresh browser session, and only reproduced candidates reach the user. Each candidate needs:
+   - kind "hard-failure": objective breakage — a link/button you CLICKED that leads to a 404/error page (a broken link), HTTP 5xx, console/page errors, crashes, blank pages. Include the exact control text, URL, and HTTP status.
+   - kind "advisory": (a) an expected-but-missing page — a standard page you expected that had NO control linking to it, so you tried its URL directly and got a 404 — titled like "Expected page \\"/signup\\" but it was not present (HTTP 404)"; and (b) your judgment on UX, accessibility, or speed. Be sparing; only what a developer would thank you for.
+3. ${screenCaptureRules()}
+4. CANDIDATES — suspected SEMANTIC bugs: the page renders and returns 200, but the behavior is wrong (wrong data, wrong order, lost state, a control that does nothing). Do NOT file these as findings — an independent Verifier will re-execute your repro in a fresh browser session, and only reproduced candidates reach the user. Each candidate needs:
    - "expectation": the behavior the app violated, and "source": where that expectation comes from — "docs" (the product's own docs), "brief" (the reconnaissance above), or "common-sense"
    - "repro": numbered steps a FRESH session can follow verbatim, starting from ${target.href} (include exact inputs and what to observe)
-4. LEADS — at most ${MAX_LEADS_PER_REPORT}: suspicious-but-unconfirmed observations, or territory you noticed but could not chase. A later wave (or the next Run) picks these up; they outlive you.
+5. LEADS — at most ${MAX_LEADS_PER_REPORT}: suspicious-but-unconfirmed observations, or territory you noticed but could not chase. A later wave (or the next Run) picks these up; they outlive you.
 
 ## Final message — STRICT
 Reply with ONLY one JSON object, no prose, no markdown fences:
 {
   "flows": [ { "id": "kebab-case-id", "title": "...", "script": "export default async function flow(page, target) { ... }" } ],
   "findings": [ { "kind": "hard-failure", "title": "...", "detail": "exact evidence" } ],
+  "screens": [ { "path": "/login", "elements": [ { "label": "Sign in", "kind": "button" } ], "navigation": [ { "label": "Sign up", "target": "/signup", "trigger": "click" } ] } ],
   "candidates": [ { "title": "...", "expectation": "...", "source": "docs|brief|common-sense", "repro": ["1. ...", "2. ..."], "url": "where it is observable" } ],
   "leads": [ { "hint": "...", "url": "..." } ]${cloud ? ',\n  "evidenceUrl": "https://.../evidence/....webm or null"' : ''}
 }

@@ -1,5 +1,7 @@
 import pc from 'picocolors';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { loadConfig, loadDotEnv } from '../config.js';
+import { listAvailableModels } from '../agents/harness.js';
 import { getSupabase, isSupabaseConfigured, resolveAnalysisId } from '../publish/supabase-client.js';
 import { publishRun } from '../publish/publish.js';
 import { join } from 'node:path';
@@ -60,7 +62,8 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
         runId: request.runId,
         kind: 'full',
         reporter,
-        model: process.env.AUTOEND_MODEL ?? config?.model,
+        // The UI's per-run choice wins; env/config are the daemon's defaults.
+        model: request.model ?? process.env.AUTOEND_MODEL ?? config?.model,
         runtime: config?.runtime,
         cloudRepo: config?.cloudRepo,
       });
@@ -74,6 +77,39 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
     // otherwise leave the claimed row stuck 'running'.
     await queue.markFailed(request.runId, errorMessage).catch(() => {});
   }
+}
+
+/**
+ * Publish the account's available Cursor models to the `ai_models` table so the
+ * UI can offer a real, live model picker (Lumen has no Cursor SDK access). The
+ * daemon is the natural place: it already holds CURSOR_API_KEY. Best-effort —
+ * a failure here must never stop the daemon from serving runs.
+ */
+async function publishModels(supabase: SupabaseClient): Promise<void> {
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey) {
+    console.warn(pc.yellow('CURSOR_API_KEY not set — skipping ai_models publish (UI picker will be empty)'));
+    return;
+  }
+  const models = await listAvailableModels(apiKey);
+  if (models.length === 0) return;
+  const now = new Date().toISOString();
+  const { error: upsertError } = await supabase.from('ai_models').upsert(
+    models.map((m) => ({ id: m.id, label: m.label, is_default: m.isDefault, updated_at: now })),
+    { onConflict: 'id' },
+  );
+  if (upsertError) {
+    console.warn(pc.yellow(`could not publish ai_models: ${upsertError.message}`));
+    return;
+  }
+  // Prune models no longer offered so the picker never shows dead options.
+  const ids = models.map((m) => m.id);
+  const { error: pruneError } = await supabase
+    .from('ai_models')
+    .delete()
+    .not('id', 'in', `(${ids.map((id) => `"${id}"`).join(',')})`);
+  if (pruneError) console.warn(pc.yellow(`could not prune ai_models: ${pruneError.message}`));
+  console.log(pc.cyan('published models') + pc.dim(` · ${ids.join(', ')}`));
 }
 
 /** Long-running daemon: claim queued runs from Supabase and execute them. */
@@ -90,6 +126,12 @@ export async function runServe(opts: ServeOptions): Promise<never> {
   const queue = new SupabaseQueue(supabase, analysisId);
 
   console.log(pc.cyan('autoend serve') + pc.dim(` · watching analysis ${analysisId}`));
+
+  // Publish the live model list up front (best-effort) so the UI picker is ready.
+  await publishModels(supabase).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(pc.yellow(`publishModels failed: ${message}`));
+  });
 
   let busy = false;
   const tick = async (): Promise<void> => {

@@ -4,7 +4,8 @@ import { chromium } from 'playwright';
 import { extractJsonObject, runAgentJob, type AgentRuntime } from '../agents/harness.js';
 import { addFlow, type FlowMeta } from '../map/flow-map.js';
 import { runFlowScript } from '../replay/replay.js';
-import type { RunReporter } from '../stream/index.js';
+import type { RunReporter, ScreenElement } from '../stream/index.js';
+import { screenId, screenTitle } from '../stream/screen-id.js';
 import type { ExplorationBudget } from '../run/effort.js';
 import type { Finding, FlowSnapshot } from '../report/types.js';
 import { withoutSensitiveEnv } from '../run/sensitive-env.js';
@@ -73,9 +74,18 @@ export interface CandidateDefect {
   url?: string;
 }
 
+/** Per-screen structure an explorer captured from its `snapshot -i -c` output. */
+export interface ReportedScreen {
+  path: string;
+  elements: Array<{ label: string; kind: string }>;
+  navigation: Array<{ label: string; target: string; trigger?: string }>;
+}
+
 export interface ExplorerReport {
   flows: ProposedFlow[];
   findings: Array<{ kind: 'hard-failure' | 'advisory'; title: string; detail: string }>;
+  /** Interactive elements + navigation per screen the explorer visited. */
+  screens?: ReportedScreen[];
   /** Deep path only (ADR-0007/0008); absent on smoke reports. */
   candidates?: CandidateDefect[];
   leads?: Array<{ hint: string; url?: string }>;
@@ -135,6 +145,9 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
   );
 
   const findings = await collectReportedFindings(reports, (i) => `explore-${i}`, opts.evidenceDir);
+  // Enrich screens with captured structure before admitting flows, so a bad-end
+  // flow can still settle its last screen 'failed' afterwards (status wins).
+  await emitReportedScreens(reports, opts);
   const proposed = collectProposedFlows(reports, opts.knownFlows);
   const flowSnapshots = await admitProposedFlows(proposed, opts, workDir);
   return { discovered: flowSnapshots.length, findings, flows: flowSnapshots };
@@ -242,21 +255,32 @@ export async function admitProposedFlows(
         });
         if (outcome.ok) {
           const now = new Date().toISOString();
-          // Settle the screens this verified flow visited: framenavigated left
-          // them 'running', so mark them 'discovered' now that the flow passed.
-          for (const screenId of outcome.visitedScreenIds) {
-            await opts.reporter?.screenSeen({ id: screenId, path: screenId, status: 'discovered' });
+          // A flow that ran clean but ended on an HTTP error page is a broken
+          // path, not a verified one: keep it OUT of the Flow Map (we never want
+          // to replay a known-bad path as if it were a working flow). The 404
+          // destination itself is already dropped by runFlowScript, so every id
+          // left in visitedScreenIds is a real page — emit them all as discovered.
+          const badEnd = outcome.badEndState;
+          const ids = outcome.visitedScreenIds;
+          for (const id of ids) {
+            await opts.reporter?.screenSeen({ id, path: id, status: 'discovered' });
           }
-          await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
+          if (!badEnd) {
+            await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
+          } else {
+            console.warn(`discovered flow "${flow.id}" ends on an error page (${badEnd}); recorded as failed`);
+          }
           flowSnapshots.push({
             id: flow.id,
             title: flow.title,
-            status: 'discovered',
+            status: badEnd ? 'failed' : 'discovered',
             discoveredAt: now,
-            lastPassedAt: now,
+            lastPassedAt: badEnd ? undefined : now,
             timeline: outcome.timeline,
             evidence: outcome.evidence,
             durationMs: outcome.durationMs,
+            console: outcome.console,
+            network: outcome.network,
             script: flow.script,
           });
         } else {
@@ -336,6 +360,10 @@ export function explorerBrowserProtocol(opts: ExploreOptions, session: string, v
 export function hardRules(origin: string): string {
   return `## Hard rules
 - NEVER navigate off the origin ${origin} — if a click leaves it, go back immediately.
+- Navigate LIKE A USER: start from the entry point and reach pages by CLICKING the links, buttons, and controls that ACTUALLY EXIST in the page you are on (visible in your \`snapshot -i -c\`). Traverse only what the UI offers.
+- BROKEN LINK = ERROR: if you CLICK a link/button that exists and it lands on a 404 or error page, the app offered navigation that is dead — report it as a kind "hard-failure" finding (include the control's text, the URL, and the HTTP status).
+- EXPECTED-BUT-MISSING = WARNING: do NOT guess or type random URLs. The ONLY exception: when you reasonably expect a standard page to exist (e.g. a site with a login link ought to have a signup page) but NO control on the UI links to it, you may try that ONE URL directly — and if it 404s, report it as a kind "advisory" finding (e.g. "Expected page \\"/signup\\" but it was not present (HTTP 404)"), a warning, not an error.
+- In EITHER case a page whose document responded HTTP >= 400 is NEVER a screen. Only pages that actually loaded (HTTP < 400) go under "screens".
 - Avoid destructive or irreversible actions (deleting data, real purchases, sending messages to third parties) unless a flow cannot be completed otherwise.
 - Do not read or modify files outside your working directory. Your only tools are agent-browser and trivial shell.`;
 }
@@ -353,6 +381,98 @@ ${known}
    - prefer role/text locators: \`page.getByRole('link', { name: 'Pricing' })\`
    - assert by throwing: \`if (!heading?.includes('Pricing')) throw new Error('expected Pricing, got ' + heading)\`
    - keep it under ~25 lines; it must complete in under 60s`;
+}
+
+/**
+ * Instructs explorers to report each page's structure. Shared by smoke and
+ * persona prompts so the SCREENS contract never drifts between them.
+ */
+export function screenCaptureRules(): string {
+  return `SCREENS — for every distinct page that ACTUALLY LOADED (HTTP < 400; a real page, not a 404/error), record its structure from your \`snapshot -i -c\` output:
+   - "elements": the interactive controls on the page — each { "label": visible text/aria, "kind": one of button|link|input|checkbox|dropdown|form|text }
+   - "navigation": the controls that take the user to another page — each { "label": the control's text, "target": the destination path e.g. "/settings", "trigger": usually "click" }
+   Report the real page path (e.g. "/login", "/projects/alpha"). Do NOT include pages that 404 or error — those go under FINDINGS as "advisory" (expected-but-missing), never here. Missing data → empty arrays.`;
+}
+
+/** JSON fragment appended to a prompt's output contract for the screens array. */
+const SCREENS_CONTRACT = `,
+  "screens": [
+    { "path": "/login", "elements": [ { "label": "Sign in", "kind": "button" } ], "navigation": [ { "label": "Sign up", "target": "/signup", "trigger": "click" } ] }
+  ]`;
+
+/** Map a free-form element kind an explorer reported to Lumen's ElementType. */
+export function mapElementType(kind: string): string {
+  const k = kind.toLowerCase().trim();
+  if (k === 'button' || k === 'submit') return 'button';
+  if (k === 'link' || k === 'a' || k === 'anchor') return 'link';
+  if (k === 'input' || k === 'textbox' || k === 'textarea' || k === 'search') return 'input';
+  if (k === 'form') return 'form';
+  if (k === 'image' || k === 'img') return 'image';
+  if (k === 'dropdown' || k === 'select' || k === 'combobox' || k === 'menu') return 'dropdown';
+  if (k === 'checkbox' || k === 'radio' || k === 'switch' || k === 'toggle') return 'checkbox';
+  return 'text';
+}
+
+/** Human-readable expected actions synthesized from a screen's elements. */
+function deriveExpectedActions(elements: ScreenElement[]): string[] {
+  const actions: string[] = [];
+  for (const el of elements) {
+    if (el.type === 'button' || el.type === 'link') actions.push(`Click "${el.label}"`);
+    else if (el.type === 'input') actions.push(`Enter "${el.label}"`);
+    else if (el.type === 'checkbox' || el.type === 'dropdown') actions.push(`Set "${el.label}"`);
+    else if (el.type === 'form') actions.push(`Submit ${el.label}`);
+  }
+  return actions.slice(0, 8);
+}
+
+/** Resolve an explorer-reported path/URL to the same stable id the DB uses. */
+function toScreenId(pathOrUrl: string, target: URL): string {
+  try {
+    return screenId(new URL(pathOrUrl, target).href);
+  } catch {
+    return '/';
+  }
+}
+
+/**
+ * Stream the per-screen structure explorers reported into the screens table as
+ * enrichment (elements/navigation/expected actions), leaving status untouched
+ * so a flow's settled status is never downgraded. Best-effort; never throws.
+ */
+export async function emitReportedScreens(
+  reports: Array<ExplorerReport | undefined>,
+  opts: Pick<ExploreOptions, 'reporter' | 'target'>,
+): Promise<void> {
+  const reporter = opts.reporter;
+  if (!reporter) return;
+  for (const report of reports) {
+    for (const s of report?.screens ?? []) {
+      const id = toScreenId(s.path, opts.target);
+      const elements: ScreenElement[] = s.elements.map((e, i) => ({
+        id: `${id}-el-${i}`,
+        label: e.label,
+        type: mapElementType(e.kind),
+        description: '',
+      }));
+      const navigation = s.navigation.map((n) => ({
+        label: n.label,
+        targetScreenId: toScreenId(n.target, opts.target),
+        trigger: n.trigger || 'click',
+      }));
+      await reporter.screenSeen({
+        id,
+        path: id,
+        title: screenTitle(id),
+        elements,
+        navigation,
+        expectedActions: deriveExpectedActions(elements),
+        // Enrichment only: never conjure a screen node from the agent's word. A
+        // real screen already exists because a verified flow navigated to it and
+        // got HTTP < 400; a guessed/404 path has no row and stays off the graph.
+        enrichOnly: true,
+      });
+    }
+  }
 }
 
 function smokePrompt(index: number, session: string, opts: ExploreOptions): string {
@@ -374,8 +494,9 @@ ${hardRules(target.origin)}
 ## What to produce
 1. ${flowScriptRules(knownFlows)}
 2. FINDINGS —
-   - kind "hard-failure": objective breakage only (console/page errors, HTTP >= 400 responses, crashes, blank pages). Include the exact error output in detail.
-   - kind "advisory": your judgment on UX, accessibility, or speed. Be sparing; only what a developer would thank you for.
+   - kind "hard-failure": objective breakage — a link/button you CLICKED that leads to a 404/error page (a broken link), HTTP 5xx, console/page errors, crashes, blank pages. Include the exact control text, URL, and HTTP status.
+   - kind "advisory": (a) an expected-but-missing page — a standard page you expected that had NO control linking to it, so you tried its URL directly and got a 404 — titled like "Expected page \\"/signup\\" but it was not present (HTTP 404)"; and (b) your judgment on UX, accessibility, or speed. Be sparing; only what a developer would thank you for.
+3. ${screenCaptureRules()}
 
 ## Final message — STRICT
 Reply with ONLY one JSON object, no prose, no markdown fences:
@@ -385,7 +506,7 @@ Reply with ONLY one JSON object, no prose, no markdown fences:
   ],
   "findings": [
     { "kind": "hard-failure", "title": "Short statement", "detail": "Exact evidence: error text, URL, HTTP status" }
-  ]${evidenceField}
+  ]${SCREENS_CONTRACT}${evidenceField}
 }
 Empty arrays are fine. An honest empty report beats an invented one.`;
 }
@@ -399,7 +520,7 @@ Empty arrays are fine. An honest empty report beats an invented one.`;
  */
 export function parseExplorerReport(text: string): ExplorerReport | undefined {
   const raw = (extractJsonObject(text) ?? salvageReportArrays(text)) as
-    | { flows?: unknown; findings?: unknown; candidates?: unknown; leads?: unknown; evidenceUrl?: unknown }
+    | { flows?: unknown; findings?: unknown; screens?: unknown; candidates?: unknown; leads?: unknown; evidenceUrl?: unknown }
     | undefined;
   if (!raw) return undefined;
 
@@ -425,6 +546,27 @@ export function parseExplorerReport(text: string): ExplorerReport | undefined {
         title: f.title,
         detail: typeof f.detail === 'string' ? f.detail : '',
       });
+    }
+  }
+  const screens: ReportedScreen[] = [];
+  if (Array.isArray(raw.screens)) {
+    for (const s of raw.screens as Array<Record<string, unknown>>) {
+      if (typeof s?.path !== 'string') continue;
+      const elements = Array.isArray(s.elements)
+        ? (s.elements as Array<Record<string, unknown>>)
+            .filter((e) => e && typeof e.label === 'string')
+            .map((e) => ({ label: String(e.label), kind: typeof e.kind === 'string' ? e.kind : 'text' }))
+        : [];
+      const navigation = Array.isArray(s.navigation)
+        ? (s.navigation as Array<Record<string, unknown>>)
+            .filter((n) => n && typeof n.label === 'string')
+            .map((n) => ({
+              label: String(n.label),
+              target: typeof n.target === 'string' ? n.target : typeof n.targetScreenId === 'string' ? n.targetScreenId : '',
+              trigger: typeof n.trigger === 'string' ? n.trigger : 'click',
+            }))
+        : [];
+      screens.push({ path: s.path, elements, navigation });
     }
   }
   const candidates: CandidateDefect[] = [];
@@ -453,7 +595,7 @@ export function parseExplorerReport(text: string): ExplorerReport | undefined {
   }
   const evidenceUrl =
     typeof raw.evidenceUrl === 'string' && /^https?:\/\//.test(raw.evidenceUrl) ? raw.evidenceUrl : undefined;
-  return { flows, findings, candidates, leads, evidenceUrl };
+  return { flows, findings, screens, candidates, leads, evidenceUrl };
 }
 
 /**
@@ -465,9 +607,9 @@ export function parseExplorerReport(text: string): ExplorerReport | undefined {
  */
 export function salvageReportArrays(
   text: string,
-): { findings?: unknown; candidates?: unknown; leads?: unknown } | undefined {
+): { findings?: unknown; screens?: unknown; candidates?: unknown; leads?: unknown } | undefined {
   const out: Record<string, unknown> = {};
-  for (const key of ['findings', 'candidates', 'leads'] as const) {
+  for (const key of ['findings', 'screens', 'candidates', 'leads'] as const) {
     const label = `"${key}"`;
     const at = text.indexOf(label);
     if (at < 0) continue;

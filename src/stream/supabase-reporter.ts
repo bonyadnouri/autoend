@@ -140,16 +140,30 @@ export class SupabaseReporter implements RunReporter {
   async screenSeen(screen: ScreenFact): Promise<void> {
     this.enqueue(async () => {
       const name = screen.title ?? screenTitle(screen.path);
+      // Only set columns the fact actually carries: a runtime visit sets status,
+      // an enrichment fact (elements/nav) omits status so it never downgrades a
+      // status a flow already settled, and never wipes elements it didn't capture.
+      const patch: Record<string, unknown> = { name, last_run_id: this.runId };
+      if (screen.status !== undefined) patch.status = screen.status;
+      if (screen.elements !== undefined) patch.elements = screen.elements;
+      if (screen.navigation !== undefined) patch.navigation = screen.navigation;
+      if (screen.expectedActions !== undefined) patch.expected_actions = screen.expectedActions;
       // Update-first so repeat visits and re-runs never clobber a screen's
       // stored layout position (upsert would rewrite position back to 0,0).
       const { data: updated, error: updateError } = await this.supabase
         .from('screens')
-        .update({ name, status: screen.status, last_run_id: this.runId })
+        .update(patch)
         .eq('analysis_id', this.analysisId)
         .eq('id', screen.id)
         .select('id');
       if (updateError) throw updateError;
       if (updated && updated.length > 0) return;
+
+      // Enrichment facts (explorer-reported elements/nav) must never CREATE a
+      // screen — only a real, verified navigation may. This stops an agent from
+      // conjuring a node for a path no flow actually reached (e.g. a guessed or
+      // 404 route). If there's no row to enrich, drop the fact silently.
+      if (screen.enrichOnly) return;
 
       // Position is left at the origin as a sentinel: the UI derives graph
       // layout from the screen/edge structure (lib/layout.ts), so the backend
@@ -161,17 +175,37 @@ export class SupabaseReporter implements RunReporter {
         type: screenType(screen.path),
         description: `Discovered at ${screen.path}`,
         position: { x: 0, y: 0 },
-        status: screen.status,
+        status: screen.status ?? 'discovered',
         is_entry_point: screen.path === '/',
         accent: SCREEN_ACCENT,
-        elements: [],
-        navigation: [],
-        expected_actions: [],
+        elements: screen.elements ?? [],
+        navigation: screen.navigation ?? [],
+        expected_actions: screen.expectedActions ?? [],
         test_case_ids: [],
         issue_ids: [],
         last_run_id: this.runId,
       });
       if (insertError) throw insertError;
+    });
+  }
+
+  async screenDropped(id: string): Promise<void> {
+    this.enqueue(async () => {
+      // A navigation whose document responded HTTP >= 400 is not a real screen.
+      // Remove any row we optimistically created for it plus its dangling edges
+      // so the map never shows phantom 404 nodes (e.g. /signup, /contact).
+      const { error: edgeError } = await this.supabase
+        .from('screen_edges')
+        .delete()
+        .eq('analysis_id', this.analysisId)
+        .or(`source.eq.${id},target.eq.${id}`);
+      if (edgeError) throw edgeError;
+      const { error } = await this.supabase
+        .from('screens')
+        .delete()
+        .eq('analysis_id', this.analysisId)
+        .eq('id', id);
+      if (error) throw error;
     });
   }
 
@@ -228,7 +262,14 @@ export class SupabaseReporter implements RunReporter {
           recordedReason: update.detail ?? update.title,
           logs: (update.console ?? []).map((entry, index) => ({
             id: `log-${index}`,
-            level: entry.level === 'warning' ? 'warn' : 'error',
+            level:
+              entry.level === 'error'
+                ? 'error'
+                : entry.level === 'warning'
+                  ? 'warn'
+                  : entry.level === 'debug'
+                    ? 'debug'
+                    : 'info',
             source: 'console',
             tMs: entry.tMs,
             message: entry.text,
@@ -238,7 +279,7 @@ export class SupabaseReporter implements RunReporter {
             method: entry.method.toUpperCase(),
             endpoint: entry.url,
             status: entry.status,
-            durationMs: 0,
+            durationMs: entry.durationMs ?? 0,
             failed: entry.status === 0 || entry.status >= 400,
             tMs: entry.tMs,
           })),
