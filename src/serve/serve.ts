@@ -35,9 +35,13 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
     const target = await resolveTarget(request, repoRoot);
     const effort = await resolveEffort(request, repoRoot);
     const config = await loadConfig(repoRoot);
+    // The run carries its own analysis_id (its project); stream and publish under
+    // that same id so each project's data stays isolated and a re-run replaces
+    // only its own project.
+    const analysisId = resolveAnalysisId({ analysisId: request.analysisId ?? config?.analysisId });
     const streamReporter = createReporter({
       runId: request.runId,
-      analysisId: request.analysisId ?? config?.analysisId,
+      analysisId,
       console: false,
     });
     const reporter = new CompositeReporter([new ConsoleReporter(), streamReporter]);
@@ -53,7 +57,7 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
         effort,
         kind: 'single-test',
       });
-      await publishSingleTestArtifact(artifactDir, artifact);
+      await publishSingleTestArtifact(artifactDir, artifact, analysisId);
     } else {
       const { artifactDir, artifact } = await executeRun({
         repoRoot,
@@ -67,7 +71,7 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
         runtime: config?.runtime,
         cloudRepo: config?.cloudRepo,
       });
-      await publishRun(artifact, join(artifactDir, 'evidence'));
+      await publishRun(artifact, join(artifactDir, 'evidence'), analysisId);
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -122,10 +126,16 @@ export async function runServe(opts: ServeOptions): Promise<never> {
   if (!supabase) throw new Error('could not create Supabase client');
 
   const config = await loadConfig(opts.repoRoot);
-  const analysisId = resolveAnalysisId({ analysisId: config?.analysisId });
-  const queue = new SupabaseQueue(supabase, analysisId);
+  // By default the daemon serves EVERY project: it claims any queued run and
+  // uses that run's own analysis_id. Pin it to a single project only when one is
+  // explicitly configured (AUTOEND_ANALYSIS_ID env or config.analysisId).
+  const scopedAnalysisId = process.env.AUTOEND_ANALYSIS_ID ?? config?.analysisId;
+  const queue = new SupabaseQueue(supabase, scopedAnalysisId);
 
-  console.log(pc.cyan('autoend serve') + pc.dim(` · watching analysis ${analysisId}`));
+  console.log(
+    pc.cyan('autoend serve') +
+      pc.dim(` · watching ${scopedAnalysisId ? `analysis ${scopedAnalysisId}` : 'all projects'}`),
+  );
 
   // Publish the live model list up front (best-effort) so the UI picker is ready.
   await publishModels(supabase).catch((error: unknown) => {

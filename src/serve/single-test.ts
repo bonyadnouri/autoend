@@ -86,6 +86,10 @@ export async function executeSingleTestRun(opts: SingleTestOptions): Promise<{ a
   }
 }
 
-export async function publishSingleTestArtifact(artifactDir: string, artifact: RunArtifact): Promise<void> {
-  await publishRun(artifact, join(artifactDir, 'evidence'));
+export async function publishSingleTestArtifact(
+  artifactDir: string,
+  artifact: RunArtifact,
+  analysisId?: string,
+): Promise<void> {
+  await publishRun(artifact, join(artifactDir, 'evidence'), analysisId);
 }

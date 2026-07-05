@@ -106,12 +106,17 @@ export async function runFlowScript(
   // HTTP status of the last top-level document navigation — i.e. the status of
   // the page the user ends on. Drives the flow's semantic pass/fail.
   let finalStatus: number | undefined;
-  // Top-level document status per visited screen id. A path whose document came
-  // back HTTP >= 400 is not a real screen: it's suppressed from the graph and
-  // reported as a warning. Usually the 'response' event fires before
-  // 'framenavigated', so we can skip emission up front; the post-run sweep
-  // catches any status that arrived late.
-  const docStatusById = new Map<string, number>();
+  // Top-level document status keyed by the CONCRETE url pathname — not the
+  // normalized screen id. Two instances of a dynamic route (/products/1 and
+  // /products/999) collapse to one screen id, but only one may 404; keying by
+  // concrete path stops a single 404 from dropping the whole screen. A path
+  // whose document came back HTTP >= 400 is not a real screen: it's suppressed
+  // from the graph and reported as a warning. Usually 'response' fires before
+  // 'framenavigated', so we skip emission up front; the sweep catches late statuses.
+  const docStatusByPath = new Map<string, number>();
+  // Concrete pathname each visited screen id last navigated to, so the post-run
+  // sweep can re-check that navigation's document status by the same concrete key.
+  const pathBySid = new Map<string, string>();
   const badScreens = new Map<string, number>();
   // Wall-clock request start times so the network panel can show round-trips —
   // Playwright's request.timing() isn't populated yet at the 'response' event.
@@ -158,7 +163,7 @@ export async function runFlowScript(
     // page. Redirects (3xx) get overwritten by the final destination's status.
     if (type === 'document' && res.frame() === page.mainFrame()) {
       finalStatus = res.status();
-      docStatusById.set(screenId(res.url()), res.status());
+      docStatusByPath.set(new URL(res.url()).pathname, res.status());
     }
     // Log meaningful endpoints (navigations + API calls) whether they succeed or
     // fail, plus any failed request of any type (a broken image/script is worth
@@ -179,14 +184,17 @@ export async function runFlowScript(
     const path = new URL(frame.url()).pathname;
     timeline.push({ label: `goto ${path}`, status: 'passed', tMs: Date.now() - startedMs });
     const sid = screenId(frame.url());
-    // The document response usually landed already: if it was HTTP >= 400 this
-    // isn't a real screen — don't emit it, don't advance the edge chain past it,
-    // just record it as a bad destination for a warning finding.
-    const knownStatus = docStatusById.get(sid);
+    // The document response usually landed already: if this CONCRETE path came
+    // back HTTP >= 400 it isn't a real screen — don't emit it, don't advance the
+    // edge chain past it, just record it as a bad destination for a warning.
+    const knownStatus = docStatusByPath.get(path);
     if (knownStatus !== undefined && knownStatus >= 400) {
       badScreens.set(sid, knownStatus);
       return;
     }
+    // Remember the concrete path this screen resolved to so the sweep can
+    // re-check a document status that arrives after this event.
+    pathBySid.set(sid, path);
     if (!visitedScreenIds.includes(sid)) visitedScreenIds.push(sid);
     void reporter.screenSeen({
       id: sid,
@@ -247,7 +255,7 @@ export async function runFlowScript(
   // HTTP >= 400 is dropped from the graph and reclassified as a bad destination.
   const goodVisited: string[] = [];
   for (const sid of visitedScreenIds) {
-    const status = docStatusById.get(sid);
+    const status = docStatusByPath.get(pathBySid.get(sid) ?? '');
     if (status !== undefined && status >= 400) {
       badScreens.set(sid, status);
       void reporter.screenDropped(sid);

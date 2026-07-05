@@ -85,7 +85,7 @@ export class SupabaseReporter implements RunReporter {
       const { error } = await this.supabase.from(table).delete().eq('analysis_id', this.analysisId);
       if (error) throw error;
     }
-    await this.supabase
+    const { error } = await this.supabase
       .from('analyses')
       .update({
         app_name: appName(target),
@@ -102,6 +102,7 @@ export class SupabaseReporter implements RunReporter {
         exploration_screen_order: [],
       })
       .eq('id', this.analysisId);
+    if (error) throw error;
   }
 
   async runFinished(summary: RunSummary): Promise<void> {

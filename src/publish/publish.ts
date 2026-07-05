@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ConsoleEntry, Finding, FlowSnapshot, NetworkEntry, RunArtifact, StepResult } from '../report/types.js';
 import { screenId, screenTitle } from '../stream/screen-id.js';
 import { uploadEvidence } from './evidence.js';
-import { ANALYSIS_ID, getSupabase } from './supabase-client.js';
+import { getSupabase, resolveAnalysisId } from './supabase-client.js';
 
 export interface PublishResult {
   skipped: boolean;
@@ -138,10 +138,10 @@ function journeySteps(timeline: StepResult[] | undefined): JourneyRow['steps'] {
  * as broken journeys so the graph shows where a path regressed. Journeys share
  * their Flow's id, which is exactly what each test's `journey_id` points at.
  */
-function buildJourneys(artifact: RunArtifact): JourneyRow[] {
+function buildJourneys(artifact: RunArtifact, analysisId: string): JourneyRow[] {
   return artifact.flows.map((flow) => ({
     id: flow.id,
-    analysis_id: ANALYSIS_ID,
+    analysis_id: analysisId,
     name: flow.title,
     description:
       flow.status === 'discovered'
@@ -232,13 +232,17 @@ function evidenceUrl(urls: Map<string, string>, file: string | undefined): strin
   return urls.get(file) ?? urls.get(basename(file)) ?? null;
 }
 
-function buildTests(artifact: RunArtifact, investigatedIds: Set<string>): TestRow[] {
+function buildTests(
+  artifact: RunArtifact,
+  investigatedIds: Set<string>,
+  analysisId: string,
+): TestRow[] {
   const flowIds = new Set(artifact.flows.map((flow) => flow.id));
   const tests: TestRow[] = artifact.flows.map((flow) => {
     const related = artifact.findings.filter((f) => f.flowId === flow.id);
     return {
       id: flow.id,
-      analysis_id: ANALYSIS_ID,
+      analysis_id: analysisId,
       name: flow.title,
       // Each Flow-backed test belongs to the Journey built from the same Flow.
       journey_id: flow.id,
@@ -271,7 +275,7 @@ function buildTests(artifact: RunArtifact, investigatedIds: Set<string>): TestRo
     if (flowIds.has(sid) || !findingHasDetail(finding)) continue;
     tests.push({
       id: sid,
-      analysis_id: ANALYSIS_ID,
+      analysis_id: analysisId,
       name: finding.title,
       journey_id: '',
       screen_ids: [],
@@ -331,10 +335,10 @@ function suggestedFix(finding: Finding): string {
  * high-level observation to the concrete issue and its investigation. Advisories
  * (which never became Issues) still surface here as improvement suggestions.
  */
-function buildInsights(artifact: RunArtifact): InsightRow[] {
+function buildInsights(artifact: RunArtifact, analysisId: string): InsightRow[] {
   return artifact.findings.map((finding) => ({
     id: `insight-${finding.id}`,
-    analysis_id: ANALYSIS_ID,
+    analysis_id: analysisId,
     title: finding.title,
     category: insightCategory(finding.kind),
     description: finding.detail || finding.title,
@@ -347,10 +351,10 @@ function buildInsights(artifact: RunArtifact): InsightRow[] {
   }));
 }
 
-function buildIssues(artifact: RunArtifact): IssueRow[] {
+function buildIssues(artifact: RunArtifact, analysisId: string): IssueRow[] {
   return artifact.findings.map((finding) => ({
     id: finding.id,
-    analysis_id: ANALYSIS_ID,
+    analysis_id: analysisId,
     title: finding.title,
     description: finding.detail,
     severity: severity(finding.kind),
@@ -377,6 +381,7 @@ function findingHasDetail(finding: Finding): boolean {
 function buildInvestigations(
   artifact: RunArtifact,
   urls: Map<string, string>,
+  analysisId: string,
 ): InvestigationRow[] {
   const flowsById = new Map(artifact.flows.map((flow) => [flow.id, flow]));
   const byFlow = new Map<string, InvestigationRow>();
@@ -435,7 +440,7 @@ function buildInvestigations(
     // One investigation per subject (composite PK) — the last detailed Finding
     // for a given subject wins (only collides when several share a flowId).
     byFlow.set(sid, {
-      analysis_id: ANALYSIS_ID,
+      analysis_id: analysisId,
       test_id: sid,
       payload,
     });
@@ -454,7 +459,7 @@ function buildInvestigations(
     const shots = candidates.filter((s) => urls.has(s.file) || urls.has(s.file.split('/').pop()!));
 
     byFlow.set(flow.id, {
-      analysis_id: ANALYSIS_ID,
+      analysis_id: analysisId,
       test_id: flow.id,
       payload: {
         testId: flow.id,
@@ -543,6 +548,7 @@ async function replaceRows(
   table: string,
   idColumn: string,
   rows: Array<Record<string, unknown>>,
+  analysisId: string,
 ): Promise<void> {
   if (rows.length > 0) {
     throwOnError(
@@ -550,8 +556,13 @@ async function replaceRows(
       (await supabase.from(table).upsert(rows, { onConflict: `analysis_id,${idColumn}` })).error,
     );
   }
-  const keepIds = rows.map((row) => String(row[idColumn]));
-  const pruneAll = supabase.from(table).delete().eq('analysis_id', ANALYSIS_ID);
+  // Quote each id for the PostgREST `in.(...)` list. Ids are string paths/slugs
+  // (e.g. `/login`, `missing-/gone`) that can contain `/`, `,`, and other
+  // separators; JSON.stringify wraps them in double quotes and escapes any
+  // embedded quotes, so the filter can't be broken (or mis-target rows) by a
+  // raw comma/slash. Unquoted joining silently pruned or kept the wrong rows.
+  const keepIds = rows.map((row) => JSON.stringify(String(row[idColumn])));
+  const pruneAll = supabase.from(table).delete().eq('analysis_id', analysisId);
   const prune =
     keepIds.length > 0 ? pruneAll.not(idColumn, 'in', `(${keepIds.join(',')})`) : pruneAll;
   throwOnError(`prune ${table}`, (await prune).error);
@@ -582,6 +593,7 @@ function expectedMissingPath(finding: Finding): string | undefined {
 async function reconcileExpectedMissingScreens(
   supabase: SupabaseClient,
   artifact: RunArtifact,
+  analysisId: string,
 ): Promise<void> {
   const ids = new Set<string>();
   for (const finding of artifact.findings) {
@@ -601,13 +613,13 @@ async function reconcileExpectedMissingScreens(
     const { data: updated, error: updateError } = await supabase
       .from('screens')
       .update(patch)
-      .eq('analysis_id', ANALYSIS_ID)
+      .eq('analysis_id', analysisId)
       .eq('id', id)
       .select('id');
     throwOnError('warn missing screen', updateError);
     if (updated && updated.length > 0) continue;
     const { error: insertError } = await supabase.from('screens').insert({
-      analysis_id: ANALYSIS_ID,
+      analysis_id: analysisId,
       id,
       name: screenTitle(id),
       type: 'core',
@@ -639,11 +651,12 @@ async function reconcileScreenLinks(
   supabase: SupabaseClient,
   journeys: JourneyRow[],
   issues: IssueRow[],
+  analysisId: string,
 ): Promise<void> {
   const { data: rows, error } = await supabase
     .from('screens')
     .select('id')
-    .eq('analysis_id', ANALYSIS_ID);
+    .eq('analysis_id', analysisId);
   throwOnError('read screens for linking', error);
   const existing = new Set((rows ?? []).map((r) => r.id as string));
   if (existing.size === 0) return;
@@ -686,7 +699,7 @@ async function reconcileScreenLinks(
         await supabase
           .from('screens')
           .update(patch)
-          .eq('analysis_id', ANALYSIS_ID)
+          .eq('analysis_id', analysisId)
           .eq('id', id)
       ).error,
     );
@@ -702,43 +715,44 @@ async function reconcileScreenLinks(
 export async function publishRun(
   artifact: RunArtifact,
   evidenceDir: string,
+  analysisId: string = resolveAnalysisId(),
 ): Promise<PublishResult> {
   const supabase: SupabaseClient | null = getSupabase();
   if (!supabase) return { skipped: true, tests: 0, issues: 0, investigations: 0 };
 
   const urls = await uploadEvidence(supabase, artifact.runId, evidenceDir);
 
-  const investigations = buildInvestigations(artifact, urls);
+  const investigations = buildInvestigations(artifact, urls, analysisId);
   const investigatedIds = new Set(investigations.map((row) => row.test_id));
-  const tests = buildTests(artifact, investigatedIds);
-  const issues = buildIssues(artifact);
-  const journeys = buildJourneys(artifact);
+  const tests = buildTests(artifact, investigatedIds, analysisId);
+  const issues = buildIssues(artifact, analysisId);
+  const journeys = buildJourneys(artifact, analysisId);
 
   // Upsert fresh rows, then prune the previous Run's stale ones. Order matters:
   // new data lands before old data leaves, so a failure never empties the run.
   const asRows = <T>(rows: T[]): Array<Record<string, unknown>> =>
     rows as unknown as Array<Record<string, unknown>>;
-  await replaceRows(supabase, 'journeys', 'id', asRows(journeys));
-  await replaceRows(supabase, 'tests', 'id', asRows(tests));
-  await replaceRows(supabase, 'issues', 'id', asRows(issues));
-  await replaceRows(supabase, 'investigations', 'test_id', asRows(investigations));
-  await replaceRows(supabase, 'insights', 'id', asRows(buildInsights(artifact)));
+  await replaceRows(supabase, 'journeys', 'id', asRows(journeys), analysisId);
+  await replaceRows(supabase, 'tests', 'id', asRows(tests), analysisId);
+  await replaceRows(supabase, 'issues', 'id', asRows(issues), analysisId);
+  await replaceRows(supabase, 'investigations', 'test_id', asRows(investigations), analysisId);
+  await replaceRows(supabase, 'insights', 'id', asRows(buildInsights(artifact, analysisId)), analysisId);
 
   // Turn expected-but-missing pages into amber warning nodes (0 elements)
   // before counting, so SPA soft-404s the explorer caught by content show up
   // as warnings on the map instead of lingering as red/failed screens.
-  await reconcileExpectedMissingScreens(supabase, artifact);
+  await reconcileExpectedMissingScreens(supabase, artifact, analysisId);
 
   // Back-fill each streamed screen's test_case_ids/issue_ids from the journey
   // graph so the map's "Generated tests"/"Related issues" counts aren't always 0.
-  await reconcileScreenLinks(supabase, journeys, issues);
+  await reconcileScreenLinks(supabase, journeys, issues, analysisId);
 
   // Screens are streamed live by the reporter; count them for the summary
   // (publish otherwise only reconciles missing-page warnings above).
   const { count: screenCount, error: screenCountError } = await supabase
     .from('screens')
     .select('id', { count: 'exact', head: true })
-    .eq('analysis_id', ANALYSIS_ID);
+    .eq('analysis_id', analysisId);
   throwOnError('count screens', screenCountError);
 
   // Commit marker: write the summary last so the UI flips to this Run atomically.
@@ -746,21 +760,21 @@ export async function publishRun(
   const { data: existing, error: selectError } = await supabase
     .from('analyses')
     .select('id')
-    .eq('id', ANALYSIS_ID)
+    .eq('id', analysisId)
     .maybeSingle();
   throwOnError('read analysis', selectError);
 
   if (existing) {
     throwOnError(
       'update analysis',
-      (await supabase.from('analyses').update(summary).eq('id', ANALYSIS_ID)).error,
+      (await supabase.from('analyses').update(summary).eq('id', analysisId)).error,
     );
   } else {
     throwOnError(
       'insert analysis',
       (
         await supabase.from('analyses').insert({
-          id: ANALYSIS_ID,
+          id: analysisId,
           ...summary,
           coverage_percent: 0,
           exploration_log: [],
