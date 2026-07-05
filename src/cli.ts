@@ -22,7 +22,7 @@ const USAGE = `Usage:
 
 Options:
   -e, --effort <level>   ${EFFORT_LEVELS.join(' | ')} (default: from config, else mid)
-      --model <id>       Cursor model id for all agents (default: strongest available)
+      --model <id>       Model id for agents (Cursor ids today; OpenRouter ids once chat stages are wired)
       --runtime <where>  local | cloud — where explorers run (default: from config/env, else local)
   -h, --help             show this help
 `;

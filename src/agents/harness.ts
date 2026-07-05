@@ -1,4 +1,5 @@
 import { Agent, Cursor } from '@cursor/sdk';
+import { chatCompletion, listOpenRouterModels } from './openrouter.js';
 
 /**
  * The one place autoend spawns Cursor SDK agents (ADR-0003). Every fleet role
@@ -6,9 +7,42 @@ import { Agent, Cursor } from '@cursor/sdk';
  * to a fresh agent (local machine or Cursor-hosted cloud VM), raced against a
  * wall-clock kill. Centralized so the harness stays a swappable module
  * (ADR-0003 consequences).
+ *
+ * OpenRouter chat completions (`runChatJob`) live here too; chat-only stages
+ * can use them without touching Cursor agent spawning.
  */
 
 export type AgentRuntime = 'local' | 'cloud';
+
+export type LlmProvider = 'cursor' | 'openrouter';
+
+/** Env AUTOEND_LLM_PROVIDER; default 'cursor' preserves existing agent runs. */
+export function resolveLlmProvider(): LlmProvider {
+  return process.env.AUTOEND_LLM_PROVIDER === 'openrouter' ? 'openrouter' : 'cursor';
+}
+
+export interface ChatJob {
+  name: string;
+  prompt: string;
+  model: string;
+  apiKey: string;
+  timeoutMs: number;
+}
+
+/**
+ * Run one OpenRouter chat completion. Returns assistant text or undefined on
+ * failure — same degrade contract as runAgentJob. Not wired to fleet stages yet.
+ */
+export async function runChatJob(job: ChatJob): Promise<string | undefined> {
+  const text = await chatCompletion({
+    apiKey: job.apiKey,
+    model: job.model,
+    prompt: job.prompt,
+    timeoutMs: job.timeoutMs,
+  });
+  if (text === undefined) console.warn(`${job.name} returned no usable reply`);
+  return text;
+}
 
 export interface AgentJob {
   /** Agent name, surfaced in Cursor's UI/logs. */
@@ -94,7 +128,7 @@ export async function runAgentJob(job: AgentJob): Promise<string | undefined> {
 const STRONG_MODEL_PREFERENCE: RegExp[] = [/opus/i, /gpt-?5/i, /sonnet/i, /gemini.*pro/i, /grok/i];
 
 /** Rank a model id/aliases against the strong-first preference; lower = stronger. */
-function modelRank(id: string, aliases: string[] = []): number {
+export function modelRank(id: string, aliases: string[] = []): number {
   for (let i = 0; i < STRONG_MODEL_PREFERENCE.length; i++) {
     const p = STRONG_MODEL_PREFERENCE[i]!;
     if (p.test(id) || aliases.some((a) => p.test(a))) return i;
@@ -115,7 +149,22 @@ export interface AvailableModel {
  * publishes this to Supabase so Lumen can offer a real, live choice). Returns []
  * when the SDK can't be reached — callers degrade to auto-resolution.
  */
-export async function listAvailableModels(apiKey: string): Promise<AvailableModel[]> {
+export async function listAvailableModels(
+  apiKey?: string,
+  provider: LlmProvider = resolveLlmProvider(),
+): Promise<AvailableModel[]> {
+  if (provider === 'openrouter') {
+    const key = process.env.OPENROUTER_API_KEY ?? apiKey;
+    if (!key) {
+      console.warn('OPENROUTER_API_KEY not set — cannot list OpenRouter models');
+      return [];
+    }
+    return listOpenRouterModels(key);
+  }
+  if (!apiKey) {
+    console.warn('CURSOR_API_KEY not set — cannot list Cursor models');
+    return [];
+  }
   let models: Array<{ id: string; aliases?: string[] }> = [];
   try {
     models = await Cursor.models.list({ apiKey });
@@ -137,8 +186,20 @@ export async function listAvailableModels(apiKey: string): Promise<AvailableMode
  * (AUTOEND_MODEL / config "model") → strongest available per the preference
  * ranking → 'auto' with a warning (the one case ADR-0009 tolerates routing).
  */
-export async function resolveModel(apiKey: string, override?: string): Promise<string> {
+export async function resolveModel(
+  apiKey: string,
+  override?: string,
+  provider: LlmProvider = resolveLlmProvider(),
+): Promise<string> {
   if (override) return override;
+  if (provider === 'openrouter') {
+    const key = process.env.OPENROUTER_API_KEY ?? apiKey;
+    const models = await listOpenRouterModels(key);
+    const picked = models.find((m) => m.isDefault)?.id ?? models[0]?.id;
+    if (picked) return picked;
+    console.warn('no OpenRouter models available; falling back to anthropic/claude-3.5-sonnet');
+    return 'anthropic/claude-3.5-sonnet';
+  }
   try {
     const models = await Cursor.models.list({ apiKey });
     for (const preference of STRONG_MODEL_PREFERENCE) {

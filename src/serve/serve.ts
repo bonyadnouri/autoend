@@ -2,7 +2,7 @@ import pc from 'picocolors';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { rm } from 'node:fs/promises';
 import { loadConfig, loadDotEnv, resolveRuntime } from '../config.js';
-import { listAvailableModels, type AgentRuntime } from '../agents/harness.js';
+import { listAvailableModels, resolveLlmProvider, type AgentRuntime } from '../agents/harness.js';
 import { getSupabase, isSupabaseConfigured, resolveAnalysisId } from '../publish/supabase-client.js';
 import { publishRun } from '../publish/publish.js';
 import { addFlow, flowMapDir } from '../map/flow-map.js';
@@ -221,18 +221,26 @@ async function processRun(
 }
 
 /**
- * Publish the account's available Cursor models to the `ai_models` table so the
- * UI can offer a real, live model picker (Lumen has no Cursor SDK access). The
- * daemon is the natural place: it already holds CURSOR_API_KEY. Best-effort —
+ * Publish available LLM models to the `ai_models` table so the UI can offer a
+ * real, live model picker (Lumen has no SDK access). Provider comes from
+ * AUTOEND_LLM_PROVIDER (cursor default, openrouter when set). Best-effort —
  * a failure here must never stop the daemon from serving runs.
  */
 async function publishModels(supabase: SupabaseClient): Promise<void> {
-  const apiKey = process.env.CURSOR_API_KEY;
+  const provider = resolveLlmProvider();
+  const apiKey =
+    provider === 'openrouter' ? process.env.OPENROUTER_API_KEY : process.env.CURSOR_API_KEY;
   if (!apiKey) {
-    console.warn(pc.yellow('CURSOR_API_KEY not set — skipping ai_models publish (UI picker will be empty)'));
+    console.warn(
+      pc.yellow(
+        provider === 'openrouter'
+          ? 'OPENROUTER_API_KEY not set — skipping ai_models publish (UI picker will be empty)'
+          : 'CURSOR_API_KEY not set — skipping ai_models publish (UI picker will be empty)',
+      ),
+    );
     return;
   }
-  const models = await listAvailableModels(apiKey);
+  const models = await listAvailableModels(apiKey, provider);
   if (models.length === 0) return;
   const now = new Date().toISOString();
   const { error: upsertError } = await supabase.from('ai_models').upsert(
@@ -252,7 +260,7 @@ async function publishModels(supabase: SupabaseClient): Promise<void> {
     .delete()
     .not('id', 'in', `(${ids.map((id) => JSON.stringify(String(id))).join(',')})`);
   if (pruneError) console.warn(pc.yellow(`could not prune ai_models: ${pruneError.message}`));
-  console.log(pc.cyan('published models') + pc.dim(` · ${ids.join(', ')}`));
+  console.log(pc.cyan(`published models (${provider})`) + pc.dim(` · ${ids.join(', ')}`));
 }
 
 /** Long-running daemon: claim queued runs from Supabase and execute them. */
