@@ -1,0 +1,7 @@
+{
+  "id": "invalid-login-rejected",
+  "title": "Invalid credentials keep visitor on login page",
+  "discoveredAt": "2026-07-04T19:20:49.197Z",
+  "lastPassedAt": "2026-07-04T19:25:02.074Z",
+  "schemaVersion": 1
+}

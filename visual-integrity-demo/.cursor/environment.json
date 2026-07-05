@@ -1,0 +1,7 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "node scripts/check-node-version.mjs && pnpm install --frozen-lockfile && pnpm --filter @hack-raise/graph-core build && pnpm --filter @hack-raise/runner build && pnpm --filter @hack-raise/runner exec playwright install --with-deps chromium"
+}

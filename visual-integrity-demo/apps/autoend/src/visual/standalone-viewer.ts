@@ -1,0 +1,695 @@
+import type { StandaloneVisualReport } from './standalone-report.js';
+
+/**
+ * A single self-contained HTML file: no backend, no bundler, no build step
+ * (Visual Integrity plan: Standalone Mode > Standalone Viewer). Report data
+ * is embedded inline so opening `index.html` via `file://` works — a real
+ * `fetch()` of a sibling JSON file is blocked by the browser's file:// CORS
+ * policy, but inline images and inline JSON are not.
+ *
+ * Design: "mission control" — a fixed one-viewport dark SaaS dashboard (no
+ * scrolling) that leads with the verdict. Three zones:
+ *   - finding rail (left): verdict lockup + the violated rule, human-first
+ *   - instruments (right): spec comparison canvas + full-page detection map
+ *   - pipeline strip (bottom): the CV stages (capture → DOM → rules → pixel
+ *     diff) with timings, so the vision pipeline itself is legible
+ * Color is strategic: red/coral is reserved for the violation story, blue for
+ * detected elements, amber for the spec contract, green for a pass. All
+ * bounding boxes share ONE coordinate space per canvas, and annotations render
+ * on a dedicated top layer that comparison imagery can never occlude. On-canvas
+ * chips use fixed light/dark tokens because captures are always light-on-white.
+ *
+ * The only non-inline references are the sibling PNGs and two outbound
+ * links: the target URL and the design-system spec link.
+ */
+export function renderStandaloneViewerHtml(report: StandaloneVisualReport): string {
+  const dataJson = JSON.stringify(report).replace(/</g, '\\u003c');
+  const docTitle = `Design Review — ${hostLabel(report.target)}`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>${escapeHtml(docTitle)}</title>
+<style>${CSS}</style>
+</head>
+<body>
+  <div id="app"></div>
+  <script id="report-data" type="application/json">${dataJson}</script>
+  <script>${JS}</script>
+</body>
+</html>`;
+}
+
+function hostLabel(target: string): string {
+  try {
+    return new URL(target).host || target;
+  } catch {
+    return target;
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
+}
+
+const CSS = `
+:root {
+  /* dark slate, tinted toward a cool brand hue (265) — no pure black */
+  --bg: oklch(0.172 0.013 265);
+  --bg-sink: oklch(0.146 0.013 265);
+  --panel: oklch(0.212 0.015 265);
+  --panel-2: oklch(0.252 0.016 265);
+  --line: oklch(0.30 0.016 265);
+  --line-strong: oklch(0.40 0.018 265);
+  --text: oklch(0.955 0.006 265);
+  --text-soft: oklch(0.80 0.012 265);
+  --muted: oklch(0.635 0.014 265);
+  --faint: oklch(0.52 0.014 265);
+  /* strategic color: red owns the violation story */
+  --red: oklch(0.685 0.195 24);
+  --red-bright: oklch(0.74 0.2 26);
+  --red-soft: oklch(0.685 0.195 24 / 0.16);
+  --blue: oklch(0.70 0.13 245);
+  --amber: oklch(0.80 0.13 78);
+  --green: oklch(0.76 0.15 158);
+  /* fixed tokens for chips/knobs that sit over the always-light captures */
+  --on-dark: oklch(0.20 0.014 265);
+  --on-light: oklch(0.98 0.004 265);
+  --sans: "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font-family: var(--sans); font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+#app { height: 100dvh; max-height: 100dvh; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+img { display: block; }
+[hidden] { display: none !important; }
+a { color: inherit; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* ---------- entrance motion (time-based, not IntersectionObserver, so
+   full-page screenshots never catch a mid-reveal blank) ---------- */
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.82); } }
+.mast { animation: rise 0.45s cubic-bezier(0.16,1,0.3,1) 0.02s both; }
+.rail { animation: rise 0.5s cubic-bezier(0.16,1,0.3,1) 0.09s both; }
+.instruments .instrument:nth-of-type(1) { animation: rise 0.5s cubic-bezier(0.16,1,0.3,1) 0.17s both; }
+.instruments .instrument:nth-of-type(2) { animation: rise 0.5s cubic-bezier(0.16,1,0.3,1) 0.25s both; }
+.pipeline { animation: rise 0.45s cubic-bezier(0.16,1,0.3,1) 0.32s both; }
+
+/* ---------- masthead ---------- */
+.mast {
+  display: flex; align-items: center; gap: 16px;
+  padding: 11px 24px; background: var(--bg-sink); border-bottom: 1px solid var(--line);
+}
+.mast .brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 800; letter-spacing: 0.02em; font-size: 14px; white-space: nowrap; }
+.mast .brand .mark {
+  width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+  background: var(--red); color: var(--on-light); font-size: 13px; font-weight: 800;
+}
+.mast .crumb { color: var(--muted); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mast .crumb a { color: var(--text-soft); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
+.mast .crumb a:hover { color: var(--text); border-bottom-color: var(--text-soft); }
+.mast .verdict {
+  margin-left: auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 6px 12px; border-radius: 999px;
+}
+.mast .verdict .vd { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.mast .verdict.fail { color: var(--red-bright); background: var(--red-soft); }
+.mast .verdict.pass { color: var(--green); background: oklch(0.76 0.15 158 / 0.14); }
+
+/* ---------- board ---------- */
+.board {
+  display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+/* ---------- finding rail (left) ---------- */
+.rail {
+  border-right: 1px solid var(--line); background: var(--bg-sink);
+  padding: clamp(20px, 3.2vh, 36px) 26px 18px;
+  display: flex; flex-direction: column; min-height: 0; overflow: auto;
+}
+.kicker {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--red-bright); display: flex; align-items: center; gap: 9px;
+}
+.kicker.ok { color: var(--green); }
+.kicker .pulse-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; animation: pulse 1.9s ease-in-out infinite; }
+
+/* verdict lockup: prominent count of a REAL finding, incident-style */
+.lockup { display: flex; align-items: center; gap: 16px; margin: 16px 0 26px; }
+.lockup .count {
+  font-size: clamp(52px, 8vh, 76px); font-weight: 800; line-height: 0.82;
+  letter-spacing: -0.04em; color: var(--red); font-variant-numeric: tabular-nums;
+}
+.lockup .count.ok { color: var(--green); }
+.lockup .lk-meta { display: flex; flex-direction: column; gap: 6px; }
+.sev-tag {
+  align-self: flex-start; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 4px 10px; border-radius: 6px;
+}
+.sev-tag.high { color: var(--on-light); background: var(--red); }
+.sev-tag.medium { color: var(--on-dark); background: var(--amber); }
+.sev-tag.low { color: var(--on-dark); background: var(--blue); }
+.lockup .lk-sub { font-size: 13px; color: var(--muted); }
+
+.rail h1 {
+  font-weight: 800; letter-spacing: -0.02em;
+  font-size: clamp(23px, 2.7vw, 30px); line-height: 1.1; margin: 0 0 12px;
+}
+.rail .lede { color: var(--text-soft); font-size: 14px; margin: 0 0 24px; }
+.fact { border-top: 1px solid var(--line); padding: 13px 0; }
+.fact .k { font-size: 10.5px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin-bottom: 4px; }
+.fact .v { font-size: 13.5px; color: var(--text-soft); line-height: 1.55; }
+.rule-row { border-top: 1px solid var(--line); padding: 14px 0 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rule-id { font-family: var(--mono); font-size: 11px; color: var(--text-soft); border: 1px solid var(--line-strong); padding: 4px 8px; border-radius: 6px; background: var(--panel); }
+.spec-link { font-size: 12.5px; font-weight: 700; color: var(--blue); text-decoration: none; border-bottom: 1px solid color-mix(in oklch, var(--blue) 45%, transparent); }
+.spec-link:hover { border-bottom-color: var(--blue); }
+.rail .meta { margin-top: auto; padding-top: 20px; color: var(--faint); font-size: 11.5px; line-height: 1.7; }
+.rail .meta strong { color: var(--muted); font-weight: 700; }
+.pass-note { color: var(--green); font-size: 14px; font-weight: 600; margin: 6px 0 24px; }
+
+/* ---------- AI review card (Tier 2 model rationale, optional) ---------- */
+.ai-card { margin-top: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 12px 14px; }
+.ai-card.err { border-style: dashed; }
+.ai-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.ai-badge { font-size: 10.5px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--blue); }
+.ai-model { font-family: var(--mono); font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-chip { margin-left: auto; font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.ai-chip.bad { color: var(--red-bright); background: var(--red-soft); }
+.ai-chip.ok { color: var(--green); background: oklch(0.76 0.15 158 / 0.14); }
+.ai-chip.warn { color: var(--amber); background: oklch(0.80 0.13 78 / 0.14); }
+.ai-sum { margin: 0 0 6px; font-size: 13px; color: var(--text-soft); line-height: 1.5; }
+.ai-why { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.55; }
+.ai-fix { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 9px; font-size: 12.5px; color: var(--text-soft); line-height: 1.5; }
+.ai-fix .k { display: block; font-size: 10px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin-bottom: 3px; }
+
+/* ---------- instruments (right) ---------- */
+.instruments {
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0; padding: 0 26px;
+}
+.instrument { display: flex; flex-direction: column; min-height: 0; padding: clamp(14px, 2.2vh, 24px) 0; }
+.instrument + .instrument { border-top: 1px solid var(--line); }
+.inst-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.inst-head .no {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--muted);
+  border: 1px solid var(--line-strong); border-radius: 5px; padding: 2px 6px;
+}
+.inst-head h2 { font-size: 12px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; margin: 0; }
+.inst-head .hint { color: var(--faint); font-size: 12px; }
+
+/* layer toggles as a connected segmented control */
+.layers { margin-left: auto; display: inline-flex; gap: 2px; padding: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
+.layer {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--muted);
+  border-radius: 6px; padding: 5px 10px;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+.layer:hover { color: var(--text-soft); }
+.layer .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; transition: opacity 0.14s ease; }
+.layer[aria-pressed="true"] { color: var(--text); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.layer[aria-pressed="false"] .dot { opacity: 0.3; }
+.layer.l-spec .dot { background: var(--amber); }
+.layer.l-delta .dot { background: var(--red); }
+.layer.l-dom .dot { background: var(--blue); }
+
+/* canvases: exactly one coordinate space each; annotations always on top.
+   Width is set by JS (fitCanvas) so the canvas fits BOTH frame width and
+   height without cropping the capture. */
+.canvas-frame { flex: 1; min-height: 0; display: flex; justify-content: center; }
+.canvas {
+  position: relative; align-self: start; width: 100%;
+  border: 1px solid var(--line-strong); border-radius: 10px;
+  box-shadow: 0 1px 0 oklch(1 0 0 / 0.05) inset, 0 16px 34px -18px oklch(0 0 0 / 0.7);
+  background: #fff; overflow: hidden;
+}
+.canvas img { position: absolute; top: 0; left: 0; width: 100%; height: auto; user-select: none; }
+.canvas .base { position: absolute; inset: 0; }
+.lyr { position: absolute; inset: 0; }
+.lyr-expected { will-change: clip-path; background: #fff; }
+.lyr-expected .below {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(45deg, oklch(0.93 0.006 265) 0 8px, #fff 8px 16px);
+  border-top: 1px dashed oklch(0.4 0.02 265);
+}
+.lyr-delta { opacity: 0.95; }
+.lyr-expected[hidden], .lyr-anno[hidden], .cut[hidden], .cut-grab[hidden], .side-tag[hidden] { display: none !important; }
+.canvas.spec-off .side-tag.r { left: 8px; right: auto; }
+.cut { position: absolute; top: 0; bottom: 0; z-index: 20; width: 2px; margin-left: -1px; background: var(--on-dark); box-shadow: 0 0 0 1px oklch(1 0 0 / 0.5); }
+.cut-grab {
+  position: absolute; top: 0; bottom: 0; z-index: 21; width: 36px; margin-left: -18px;
+  display: flex; align-items: center; justify-content: center; cursor: ew-resize;
+}
+.cut-knob {
+  width: 28px; height: 28px; background: var(--on-dark); color: var(--on-light);
+  display: grid; place-items: center; border-radius: 50%;
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.4); transition: transform 0.12s ease;
+}
+.cut-grab:hover .cut-knob, .cut-grab:focus-visible .cut-knob { transform: scale(1.12); }
+.cut-grab:focus-visible { outline: none; }
+.cut-grab:focus-visible .cut-knob { box-shadow: 0 0 0 3px var(--blue); }
+.cut-knob svg { width: 15px; height: 15px; }
+.side-tag {
+  position: absolute; bottom: 8px; z-index: 25; pointer-events: none;
+  font-size: 10px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 5px; color: var(--on-light); background: var(--on-dark);
+}
+.side-tag.l { left: 8px; }
+.side-tag.r { right: 8px; }
+
+/* annotations (over always-light captures -> fixed light/dark chips) */
+.absent {
+  position: absolute; display: flex; align-items: center; justify-content: center;
+  background: repeating-linear-gradient(45deg, oklch(0.62 0.2 25 / 0.18) 0 9px, oklch(0.62 0.2 25 / 0.05) 9px 18px);
+  outline: 2px dashed var(--red); outline-offset: -2px; border-radius: 3px;
+}
+.absent-tag {
+  font-size: 11px; font-weight: 800; color: oklch(0.5 0.2 25);
+  background: var(--on-light); border: 1px solid var(--red);
+  padding: 3px 10px; border-radius: 5px; white-space: nowrap; max-width: 94%; overflow: hidden; text-overflow: ellipsis;
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.18);
+}
+.bx { position: absolute; }
+.bx .bx-tag {
+  position: absolute; top: 0; left: 0; max-width: 100%;
+  font-size: 10px; font-weight: 700; line-height: 1.5; padding: 1px 6px; border-radius: 0 0 4px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--on-light);
+}
+.bx-spec { outline: 2px dashed var(--amber); outline-offset: -2px; background: oklch(0.8 0.13 78 / 0.14); border-radius: 3px; }
+.bx-spec .bx-tag { background: var(--amber); color: var(--on-dark); }
+.bx-dom { outline: 1.5px solid oklch(0.55 0.14 245); outline-offset: -1.5px; background: transparent; border-radius: 2px; }
+.bx-dom .bx-tag { background: oklch(0.55 0.14 245); }
+.bx-model { outline: 2px dotted oklch(0.55 0.18 300); outline-offset: -2px; background: oklch(0.75 0.12 300 / 0.12); border-radius: 3px; }
+.bx-model .bx-tag { background: oklch(0.55 0.18 300); }
+.delta-note { color: var(--muted); font-size: 11.5px; margin-top: 9px; display: flex; align-items: center; gap: 7px; }
+.delta-note .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--red); flex: none; }
+
+/* ---------- pipeline strip ---------- */
+.pipeline {
+  display: flex; align-items: center; gap: 7px; flex-wrap: nowrap; overflow: hidden;
+  border-top: 1px solid var(--line); background: var(--bg-sink); padding: 8px 24px;
+  font-size: 11px; color: var(--muted);
+}
+.pipeline .lead { display: inline-flex; align-items: center; gap: 7px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; font-size: 10px; margin-right: 6px; white-space: nowrap; color: var(--text-soft); }
+.pipeline .lead::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px oklch(0.76 0.15 158 / 0.18); }
+.stage { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; padding: 4px 9px; border-radius: 7px; background: var(--panel); border: 1px solid var(--line); }
+.stage .s-name { color: var(--text-soft); font-weight: 600; }
+.stage .s-val { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.stage .s-ms { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.stage.hot { background: var(--red-soft); border-color: color-mix(in oklch, var(--red) 45%, transparent); }
+.stage.hot .s-name, .stage.hot .s-val { color: var(--red-bright); }
+.pipe-arrow { color: var(--line-strong); margin: 0 1px; }
+.pipeline .tail { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
+
+@media (max-width: 980px) {
+  body { overflow: auto; }
+  #app { height: auto; }
+  .board { grid-template-columns: 1fr; }
+  .rail { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before { animation: none !important; transition: none !important; }
+}
+`;
+
+const JS = `
+"use strict";
+var report = JSON.parse(document.getElementById('report-data').textContent);
+var app = document.getElementById('app');
+
+var VW = parseInt((report.viewport || '1280x720').split('x')[0], 10) || 1280;
+var VH = parseInt((report.viewport || '1280x720').split('x')[1], 10) || 720;
+/* Canvas A uses ONE coordinate space: the top-region crop (VW x CROP_BAND). */
+var CROP_BAND = report.topRegionHeight || 220;
+var EXPECTED_H = report.expectedBandHeight || 136;
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function hostOf(u) { try { return new URL(u).host || u; } catch (e) { return u; } }
+function fmtWhen(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return iso || '';
+  try { return d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+  catch (e) { return iso; }
+}
+function shortTitle(v) { return String(v.title || '').replace(/\\s*\\(.*?\\)\\s*$/, '').trim() || v.ruleId; }
+function pct(n, of) { return (n / of * 100).toFixed(3) + '%'; }
+
+var RULE_ARTIFACT_MAP = ${JSON.stringify({
+  'CMS-HCGOV-BANNER-001': 'expected-usa-banner',
+  'CMS-HCGOV-HEADER-002': 'expected-hcgov-header',
+  'USWDS-BANNER-001': 'expected-usa-banner',
+  'DSFR-HEADER-001': 'expected-dsfr-header',
+  'GOOGLE-MAT-CHROME-001': 'expected-google-chrome',
+})};
+
+function contractBoxesForViolation(v) {
+  if (!v) return [];
+  var fromEvidence = overlays.filter(function (o) {
+    return (v.evidenceOverlayIds || []).indexOf(o.id) !== -1 && o.source === 'design-contract' && o.box;
+  });
+  if (fromEvidence.length) return fromEvidence;
+  var artifactId = RULE_ARTIFACT_MAP[v.ruleId];
+  if (!artifactId) return [];
+  var art = (report.expectedArtifacts || []).find(function (a) { return a.id === artifactId; });
+  if (!art) return [];
+  var name = String(art.label || '').replace(/^Expected\\s+/i, '').replace(/\\s+region$/i, '');
+  return [{ source: 'design-contract', label: name, box: art.box }];
+}
+
+var violations = report.violations || [];
+var overlays = report.overlays || [];
+var primary = violations[0];
+var targetHost = hostOf(report.target);
+function evidenceOf(v) {
+  return contractBoxesForViolation(v);
+}
+var contractBoxes = primary ? contractBoxesForViolation(primary) : [];
+var domBoxes = overlays.filter(function (o) { return o.source === 'dom-geometry' && o.box; });
+var modelBoxes = overlays.filter(function (o) { return o.source === 'model' && o.box; });
+var deltaPct = report.changedRatio != null ? (report.changedRatio * 100).toFixed(1) : null;
+
+/* ---------- masthead ---------- */
+function mastHtml() {
+  var verdict = violations.length
+    ? '<span class="verdict fail"><span class="vd"></span>' + violations.length + ' violation' + (violations.length === 1 ? '' : 's') + '</span>'
+    : '<span class="verdict pass"><span class="vd"></span>Passed</span>';
+  return '<header class="mast">' +
+    '<span class="brand"><span class="mark">◈</span> Visual Integrity</span>' +
+    '<span class="crumb">Design review of <a href="' + esc(report.target) + '" target="_blank" rel="noopener">' + esc(targetHost) + '</a>' +
+      ' against ' + esc(report.rulePackTitle) + ' · ' + esc(fmtWhen(report.capturedAt)) + '</span>' +
+    verdict +
+  '</header>';
+}
+
+/* ---------- finding rail: verdict-forward "what's wrong" panel ---------- */
+function railHtml() {
+  var body;
+  if (!primary) {
+    body = '<div class="kicker ok"><span class="pulse-dot"></span>Verdict · all clear</div>' +
+      '<div class="lockup"><span class="count ok">0</span>' +
+        '<div class="lk-meta"><span class="sev-tag low" style="background:var(--green);color:var(--on-light)">Passed</span>' +
+        '<span class="lk-sub">violations found</span></div></div>' +
+      '<h1>No violations found</h1>' +
+      '<p class="pass-note">This page matches every rule in the pack.</p>';
+  } else {
+    var sev = primary.severity === 'high' ? 'high' : primary.severity === 'medium' ? 'medium' : 'low';
+    var sevLabel = sev.charAt(0).toUpperCase() + sev.slice(1);
+    body =
+      '<div class="kicker"><span class="pulse-dot"></span>Violation detected</div>' +
+      '<div class="lockup">' +
+        '<span class="count">' + violations.length + '</span>' +
+        '<div class="lk-meta">' +
+          '<span class="sev-tag ' + sev + '">' + esc(sevLabel) + ' severity</span>' +
+          '<span class="lk-sub">' + (violations.length === 1 ? 'issue blocks compliance' : 'issues block compliance') + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<h1>' + esc(shortTitle(primary)) + '</h1>' +
+      '<p class="lede">' + esc(primary.actual) + '</p>' +
+      '<div class="fact"><div class="k">The rule requires</div><div class="v">' + esc(primary.expected) + '</div></div>' +
+      '<div class="rule-row">' +
+        '<span class="rule-id">' + esc(primary.ruleId) + '</span>' +
+        (primary.sourceUrl ? '<a class="spec-link" href="' + esc(primary.sourceUrl) + '" target="_blank" rel="noopener">Read the spec ↗</a>' : '') +
+      '</div>';
+  }
+  return '<aside class="rail">' + body + aiHtml() +
+    '<div class="meta"><strong>' + esc(report.rulePackTitle) + '</strong><br>' +
+      'Run ' + esc(report.runId) + ' · viewport ' + esc(report.viewport) + '</div>' +
+  '</aside>';
+}
+
+/* ---------- AI review card (Tier 2 Nemotron rationale, only when a model ran) ---------- */
+function aiHtml() {
+  var c = report.classifier;
+  if (!c && report.modelReviewError) {
+    return '<div class="ai-card err"><div class="ai-head"><span class="ai-badge">AI review</span>' +
+      '<span class="ai-chip warn">unavailable</span></div>' +
+      '<p class="ai-why">Model review was configured but failed — deterministic findings above are unaffected. ' +
+      esc(report.modelReviewError) + '</p></div>';
+  }
+  if (!c) return '';
+  var modelDisagrees = violations.length && c.classification === 'likely-intentional';
+  var chip = c.classification === 'rule-violation' || c.classification === 'likely-regression'
+    ? 'bad' : c.classification === 'likely-intentional' ? 'ok' : 'warn';
+  var conf = typeof c.confidence === 'number' ? Math.round(c.confidence) + '%' : '';
+  return '<div class="ai-card' + (modelDisagrees ? ' err' : '') + '">' +
+    '<div class="ai-head"><span class="ai-badge">AI review</span>' +
+      (c.provider ? '<span class="ai-model" title="' + esc(c.provider) + '">' + esc(c.provider) + '</span>' : '') +
+      '<span class="ai-chip ' + chip + '">' + esc(String(c.classification).replace(/-/g, ' ')) + (conf ? ' · ' + conf : '') + '</span>' +
+    '</div>' +
+    (modelDisagrees ? '<p class="ai-why">Model judgment differs from deterministic rules — the violation above is the source of truth.</p>' : '') +
+    (c.summary ? '<p class="ai-sum">' + esc(c.summary) + '</p>' : '') +
+    (c.rationale ? '<p class="ai-why">' + esc(c.rationale) + '</p>' : '') +
+    (c.recommendedFix ? '<div class="ai-fix"><span class="k">Recommended fix</span>' + esc(c.recommendedFix) + '</div>' : '') +
+  '</div>';
+}
+
+/* ---------- annotations (shared, always-on-top layer) ----------
+   The FIRST contract box is rendered as the absence hatch; drawing a spec
+   box for the same rect would double-label it, so specBoxesHtml skips it. */
+function specBoxesHtml(band) {
+  return contractBoxes.slice(1).map(function (o) {
+    var b = o.box;
+    return '<div class="bx bx-spec" style="left:' + pct(b.x, VW) + ';top:' + pct(b.y, band) +
+      ';width:' + pct(b.width, VW) + ';height:' + pct(b.height, band) + ';">' +
+      '<span class="bx-tag">' + esc(o.label) + ' · required by spec</span></div>';
+  }).join('');
+}
+function absentHtml(band) {
+  if (!primary || !contractBoxes.length) return '';
+  var b = contractBoxes[0].box;
+  return '<div class="absent" style="left:' + pct(b.x, VW) + ';top:' + pct(b.y, band) +
+    ';width:' + pct(b.width, VW) + ';height:' + pct(b.height, band) + ';">' +
+    '<span class="absent-tag">' + esc(contractBoxes[0].label) + ' required here — not found</span></div>';
+}
+
+/* ---------- instrument A: spec comparison ---------- */
+function compareHtml() {
+  if (!report.expectedFile) return '';
+  var expTop = pct(EXPECTED_H, CROP_BAND);
+  return '<figure class="instrument" style="margin:0">' +
+    '<div class="inst-head"><span class="no">01</span><h2>Spec comparison</h2>' +
+      '<span class="hint">drag the cut line — spec render left, live page right</span>' +
+      '<div class="layers">' +
+        '<button class="layer l-spec" data-l="spec" aria-pressed="true"><span class="dot"></span>Spec region</button>' +
+        (report.diffFile ? '<button class="layer l-delta" data-l="delta" aria-pressed="false"><span class="dot"></span>Pixel delta' + (deltaPct ? ' · ' + deltaPct + '%' : '') + '</button>' : '') +
+      '</div></div>' +
+    '<div class="canvas-frame"><div class="canvas" id="compare" style="aspect-ratio:' + VW + ' / ' + CROP_BAND + '">' +
+      '<div class="base"><img src="' + esc(report.topRegionFile) + '" alt="Live top-of-page capture of ' + esc(targetHost) + '" draggable="false"></div>' +
+      (report.diffFile ? '<div class="lyr lyr-delta" id="lyrDelta" hidden><img src="' + esc(report.diffFile) + '" alt="Pixel delta: highlighted pixels differ from the spec render" draggable="false"></div>' : '') +
+      '<div class="lyr lyr-expected" id="lyrExpected" style="clip-path:inset(0 58% 0 0)">' +
+        '<img src="' + esc(report.expectedFile) + '" alt="Spec render: the chrome this page is required to show" draggable="false">' +
+        '<div class="below" style="top:' + expTop + '"></div>' +
+      '</div>' +
+      '<div class="lyr lyr-anno" id="lyrAnno">' + absentHtml(CROP_BAND) + '<div id="specBoxes">' + specBoxesHtml(CROP_BAND) + '</div></div>' +
+      '<span class="side-tag l">Spec</span><span class="side-tag r">Live</span>' +
+      '<div class="cut" id="cutLine" style="left:42%"></div>' +
+      '<div class="cut-grab" id="cutGrab" style="left:42%" role="slider" tabindex="0" aria-label="Spec versus live cut position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="42">' +
+        '<span class="cut-knob"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 6l-5 6 5 6M15 6l5 6-5 6"/></svg></span>' +
+      '</div>' +
+    '</div></div>' +
+    (report.diffFile ? '<figcaption class="delta-note" id="deltaNote" hidden><span class="swatch"></span>Highlighted pixels differ from the spec render — ' + (deltaPct || '?') + '% of the required band.</figcaption>' : '') +
+  '</figure>';
+}
+
+/* ---------- instrument B: page map ---------- */
+function mapHtml() {
+  return '<figure class="instrument" style="margin:0">' +
+    '<div class="inst-head"><span class="no">02</span><h2>Page map</h2>' +
+      '<span class="hint">what the scanner detected on the full capture</span>' +
+      '<div class="layers">' +
+        '<button class="layer l-dom" data-l="dom" aria-pressed="true"><span class="dot"></span>Detected elements · ' + domBoxes.length + '</button>' +
+      '</div></div>' +
+    '<div class="canvas-frame"><div class="canvas" id="pagemap" style="aspect-ratio:' + VW + ' / ' + VH + '">' +
+      '<div class="base"><img id="mapImg" src="' + esc(report.actualFile) + '" alt="Full capture of ' + esc(targetHost) + '" draggable="false"></div>' +
+      '<div class="lyr lyr-anno" id="mapBoxes"></div>' +
+    '</div></div>' +
+  '</figure>';
+}
+
+/* ---------- pipeline strip ---------- */
+var STAGE_NAMES = {
+  captureAndStabilize: 'Capture',
+  screenshotAndDom: 'DOM geometry',
+  ruleChecks: 'Rule check',
+  pixelDiff: 'Pixel delta',
+  overlayGeneration: 'Overlays',
+  tier1ModelCall: 'AI review',
+  tier2ModelCall: 'AI review (deep)'
+};
+function stageVal(stage) {
+  if (stage === 'captureAndStabilize') return esc(report.viewport);
+  if (stage === 'screenshotAndDom') return domBoxes.length + ' elements';
+  if (stage === 'ruleChecks') return violations.length + ' violation' + (violations.length === 1 ? '' : 's');
+  if (stage === 'pixelDiff') return deltaPct != null ? deltaPct + '% of band' : '';
+  if (stage === 'overlayGeneration') return overlays.length + ' regions';
+  return '';
+}
+function pipelineHtml() {
+  var stages = (report.timings || []).map(function (t, i) {
+    var hot = t.stage === 'ruleChecks' && violations.length > 0;
+    var val = stageVal(t.stage);
+    return (i > 0 ? '<span class="pipe-arrow">→</span>' : '') +
+      '<span class="stage' + (hot ? ' hot' : '') + '"><span class="s-name">' + esc(STAGE_NAMES[t.stage] || t.stage) + '</span>' +
+      (val ? '<span class="s-val">' + val + '</span>' : '') +
+      '<span class="s-ms">' + t.ms + 'ms</span></span>';
+  }).join('');
+  return '<footer class="pipeline"><span class="lead">Pipeline</span>' + stages +
+    '<span class="tail">self-contained report · no network</span></footer>';
+}
+
+app.innerHTML = mastHtml() +
+  '<div class="board">' + railHtml() +
+    '<section class="instruments">' + compareHtml() + mapHtml() + '</section>' +
+  '</div>' + pipelineHtml();
+
+/* ---------- interactions ---------- */
+(function wireCut() {
+  var canvas = document.getElementById('compare');
+  if (!canvas) return;
+  var grab = document.getElementById('cutGrab');
+  var line = document.getElementById('cutLine');
+  var expected = document.getElementById('lyrExpected');
+  var pos = 42;
+  function setPos(p) {
+    pos = Math.max(0, Math.min(100, p));
+    expected.style.clipPath = 'inset(0 ' + (100 - pos) + '% 0 0)';
+    line.style.left = pos + '%';
+    grab.style.left = pos + '%';
+    grab.setAttribute('aria-valuenow', String(Math.round(pos)));
+  }
+  function toPct(e) {
+    var r = canvas.getBoundingClientRect();
+    return (e.clientX - r.left) / r.width * 100;
+  }
+  var dragging = false;
+  canvas.addEventListener('pointerdown', function (e) {
+    dragging = true;
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    setPos(toPct(e)); e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', function (e) { if (dragging) setPos(toPct(e)); });
+  canvas.addEventListener('pointerup', function () { dragging = false; });
+  canvas.addEventListener('pointercancel', function () { dragging = false; });
+  grab.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft') { setPos(pos - 3); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { setPos(pos + 3); e.preventDefault(); }
+    else if (e.key === 'Home') { setPos(0); e.preventDefault(); }
+    else if (e.key === 'End') { setPos(100); e.preventDefault(); }
+  });
+})();
+
+(function wireLayers() {
+  var compare = document.getElementById('compare');
+  function setSpecVisible(on) {
+    if (!compare) return;
+    var exp = document.getElementById('lyrExpected');
+    var an = document.getElementById('lyrAnno');
+    var cut = document.getElementById('cutLine');
+    var grab = document.getElementById('cutGrab');
+    var specTag = compare.querySelector('.side-tag.l');
+    compare.classList.toggle('spec-off', !on);
+    if (exp) exp.hidden = !on;
+    if (an) an.hidden = !on;
+    if (cut) cut.hidden = !on;
+    if (grab) grab.hidden = !on;
+    if (specTag) specTag.hidden = !on;
+  }
+  document.querySelectorAll('.layer[data-l]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var on = btn.getAttribute('aria-pressed') !== 'true';
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      var l = btn.getAttribute('data-l');
+      if (l === 'spec') setSpecVisible(on);
+      else if (l === 'delta') {
+        var d = document.getElementById('lyrDelta'); if (d) d.hidden = !on;
+        var n = document.getElementById('deltaNote'); if (n) n.hidden = !on;
+      }
+      else if (l === 'dom') { var mb = document.getElementById('mapBoxes'); if (mb) mb.hidden = !on; }
+    });
+  });
+})();
+
+/* Page-map boxes: drawn against the image's REAL natural size (one space).
+   Boxes outside the captured area (below the viewport screenshot) are
+   dropped — drawing them would silently clip and misstate the evidence. */
+(function drawMap() {
+  var img = document.getElementById('mapImg');
+  var host = document.getElementById('mapBoxes');
+  if (!img || !host) return;
+  function draw() {
+    var w = img.naturalWidth || VW;
+    var h = img.naturalHeight || VH;
+    document.getElementById('pagemap').style.aspectRatio = w + ' / ' + h;
+    /* Dedupe geometrically identical boxes (e.g. <header> and [role=banner]
+       resolve to the same rect) — merge their labels instead of stacking tags. */
+    var byRect = {};
+    domBoxes.forEach(function (o) {
+      if (o.box.y >= h || o.box.x >= w) return;
+      var key = [o.box.x, o.box.y, o.box.width, o.box.height].map(function (n) { return Math.round(n); }).join(',');
+      var label = String(o.label || '').replace(/^Detected\\s+/i, '').split(':')[0];
+      if (byRect[key]) byRect[key].labels.push(label);
+      else byRect[key] = { box: o.box, labels: [label] };
+    });
+    var visible = Object.keys(byRect).map(function (k) { return byRect[k]; });
+    var domChip = document.querySelector('.layer.l-dom');
+    if (domChip) {
+      domChip.innerHTML = '<span class="dot"></span>Detected elements · ' + visible.length;
+      domChip.setAttribute('aria-pressed', domChip.getAttribute('aria-pressed'));
+    }
+    host.innerHTML = visible.map(function (o) {
+      var b = o.box;
+      var bh = Math.min(b.height, h - b.y);
+      var bw = Math.min(b.width, w - b.x);
+      return '<div class="bx bx-dom" style="left:' + pct(b.x, w) + ';top:' + pct(b.y, h) +
+        ';width:' + pct(bw, w) + ';height:' + pct(bh, h) + ';">' +
+        '<span class="bx-tag">' + esc(o.labels.join(' · ')) + '</span></div>';
+    }).join('') + modelBoxes.map(function (o) {
+      var b = o.box;
+      if (b.y >= h || b.x >= w) return '';
+      var bh = Math.min(b.height, h - b.y);
+      var bw = Math.min(b.width, w - b.x);
+      return '<div class="bx bx-model" style="left:' + pct(b.x, w) + ';top:' + pct(b.y, h) +
+        ';width:' + pct(bw, w) + ';height:' + pct(bh, h) + ';">' +
+        '<span class="bx-tag">' + esc(String(o.label || 'model region')) + '</span></div>';
+    }).join('');
+    fitAll();
+  }
+  if (img.complete && img.naturalWidth) draw();
+  else img.addEventListener('load', draw, { once: true });
+})();
+
+/* Fit each canvas inside its frame by BOTH width and height (no cropping). */
+function fitCanvas(canvas) {
+  var frame = canvas.parentElement;
+  if (!frame) return;
+  var ratioParts = (canvas.style.aspectRatio || '1 / 1').split('/');
+  var ratio = (parseFloat(ratioParts[0]) || 1) / (parseFloat(ratioParts[1]) || 1);
+  var fw = frame.clientWidth;
+  var fh = frame.clientHeight;
+  if (fw <= 0 || fh <= 0) return;
+  var w = Math.min(fw, fh * ratio);
+  canvas.style.width = w + 'px';
+}
+function fitAll() {
+  document.querySelectorAll('.canvas').forEach(fitCanvas);
+}
+fitAll();
+window.addEventListener('resize', fitAll);
+`;

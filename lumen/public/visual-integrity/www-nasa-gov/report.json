@@ -1,0 +1,145 @@
+{
+  "runId": "2026-07-05T08-39-53-482Z-www-nasa-gov",
+  "target": "https://www.nasa.gov/",
+  "rulePackId": "uswds-federal",
+  "rulePackTitle": "USWDS / Federal Website Standards",
+  "capturedAt": "2026-07-05T08:40:10.714Z",
+  "viewport": "1280x720",
+  "viewportWidth": 1280,
+  "actualFile": "actual.png",
+  "topRegionFile": "actual-top-region.png",
+  "topRegionHeight": 220,
+  "expectedFile": "expected-usa-banner.png",
+  "expectedBandHeight": 40,
+  "expectedArtifacts": [
+    {
+      "id": "expected-usa-banner",
+      "label": "Expected USA Banner region",
+      "file": "expected-usa-banner.png",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 40
+      },
+      "sourceUrl": "https://standards.digital.gov/standards/banner/"
+    }
+  ],
+  "diffFile": "heatmap.png",
+  "changedPixels": 49307,
+  "changedRatio": 0.96302734375,
+  "overlays": [
+    {
+      "id": "rule-1",
+      "source": "design-contract",
+      "label": "USA Banner",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 40
+      },
+      "severity": "high",
+      "rationale": "Expected by USWDS-BANNER-001: The top of the page shows the USA Banner: \"An official website of the United States government\" plus a \"Here's how you know\" disclosure, per Federal Website Standards and USWDS."
+    },
+    {
+      "id": "dom-2",
+      "source": "dom-geometry",
+      "label": "Detected navigation: \"News & Events\nMultimedia\nNASA+\"",
+      "box": {
+        "x": 744,
+        "y": 19.65625,
+        "width": 520,
+        "height": 50.625
+      }
+    },
+    {
+      "id": "dom-3",
+      "source": "dom-geometry",
+      "label": "Detected footer: \"National Aeronautics and Space Administration\n\nNASA explores the unknown in air and space, innovates for the benefit of \"",
+      "box": {
+        "x": 0,
+        "y": 6413.375,
+        "width": 1280,
+        "height": 633.75
+      }
+    },
+    {
+      "id": "dom-4",
+      "source": "dom-geometry",
+      "label": "Detected main content: \"Happy 250th Birthday America\n\nHappy 250th to the U.S.A., from 250 miles above Earth! NASA astronauts celebrate the natio\"",
+      "box": {
+        "x": 0,
+        "y": 86.28125,
+        "width": 1280,
+        "height": 6327.09375
+      }
+    },
+    {
+      "id": "dom-5",
+      "source": "dom-geometry",
+      "label": "Detected privacy link: \"Privacy Policy\"",
+      "box": {
+        "x": 355.8125,
+        "y": 4397.6875,
+        "width": 104.96875,
+        "height": 20
+      }
+    },
+    {
+      "id": "diff-6",
+      "source": "pixel-diff",
+      "label": "Banner area — visual mismatch",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 40
+      },
+      "confidence": 1,
+      "severity": "high",
+      "rationale": "Pixels in this region differ from the rendered expected CMS banner reference."
+    }
+  ],
+  "violations": [
+    {
+      "ruleId": "USWDS-BANNER-001",
+      "standard": "USWDS",
+      "title": "Missing required USA Banner (official government trust marker)",
+      "expected": "The top of the page shows the USA Banner: \"An official website of the United States government\" plus a \"Here's how you know\" disclosure, per Federal Website Standards and USWDS.",
+      "actual": "The top-of-page chrome region does not show the USA Banner text or a usa-banner component.",
+      "severity": "high",
+      "evidenceOverlayIds": [
+        "rule-1"
+      ],
+      "sourceUrl": "https://standards.digital.gov/standards/banner/"
+    }
+  ],
+  "timings": [
+    {
+      "stage": "captureAndStabilize",
+      "ms": 1458,
+      "overBudget": false
+    },
+    {
+      "stage": "screenshotAndDom",
+      "ms": 286,
+      "overBudget": false
+    },
+    {
+      "stage": "ruleChecks",
+      "ms": 0,
+      "overBudget": false
+    },
+    {
+      "stage": "pixelDiff",
+      "ms": 25,
+      "overBudget": false
+    },
+    {
+      "stage": "overlayGeneration",
+      "ms": 0,
+      "overBudget": false
+    }
+  ]
+}

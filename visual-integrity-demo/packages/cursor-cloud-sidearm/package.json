@@ -1,0 +1,28 @@
+{
+  "name": "@hack-raise/cursor-cloud-sidearm",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Reusable Cursor Cloud Agent orchestration: profile resolution, safe env injection, run lifecycle, and artifact download — no scenario or app domain logic.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.23"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  }
+}

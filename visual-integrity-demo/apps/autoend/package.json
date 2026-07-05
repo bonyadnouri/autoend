@@ -1,0 +1,73 @@
+{
+  "name": "@hack-raise/autoend",
+  "version": "0.1.1",
+  "description": "Agent-powered end-to-end testing: initiate a Run, agents test your app, review a video-backed Report.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/m2moiz/hack-raise.git",
+    "directory": "apps/autoend"
+  },
+  "homepage": "https://github.com/m2moiz/hack-raise/tree/main/apps/autoend#readme",
+  "bugs": "https://github.com/m2moiz/hack-raise/issues",
+  "keywords": [
+    "e2e",
+    "testing",
+    "agents",
+    "playwright",
+    "browser-automation",
+    "ai"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "bin": {
+    "autoend": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "npm run build:viewer && tsc -p tsconfig.json",
+    "prepare": "npm run build:viewer && tsc -p tsconfig.json",
+    "build:viewer": "tsc -p viewer/tsconfig.json --noEmit && vite build --config viewer/vite.config.ts",
+    "dev:viewer": "vite --config viewer/vite.config.ts",
+    "dev": "tsx src/cli.ts",
+    "visual:demo": "tsx src/visual/cli-demo.ts",
+    "visual:batch": "tsx scripts/batch-visual-demos.mts",
+    "visual:showcase": "tsx scripts/batch-visual-demos.mts --showcase",
+    "visual:showcase:zip": "tsx scripts/zip-visual-showcase.mts",
+    "visual:verify-batch": "tsx scripts/verify-batch-reports.mts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "@cursor/sdk": "^1.0.23",
+    "@hack-raise/cursor-cloud-sidearm": "workspace:*",
+    "agent-browser": "^0.31.1",
+    "picocolors": "^1.1.1",
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.61.1",
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "lucide-react": "^0.454.0",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "tailwindcss": "^3.4.15",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.11",
+    "vitest": "^3.0.0"
+  }
+}

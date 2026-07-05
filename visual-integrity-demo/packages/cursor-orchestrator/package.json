@@ -1,0 +1,25 @@
+{
+  "name": "@hack-raise/cursor-orchestrator",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hack-raise-agents": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/cli.js",
+    "env:check": "node dist/env-check.js",
+    "list-agents": "node dist/list.js"
+  },
+  "dependencies": {
+    "@hack-raise/cursor-cloud-sidearm": "workspace:*",
+    "@hack-raise/graph-core": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3"
+  }
+}

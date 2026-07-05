@@ -1,0 +1,5 @@
+# Lumen-derived React viewer replaces the generated dossier
+
+The Report viewer is a vendored, trimmed copy of the lumen mock prototype (github.com/an2323/lumen) — Vite + React + Tailwind, built at publish time and served as static assets by the same thin server. It replaces the single-file generated-HTML "dossier" viewer. We vendored rather than linked: lumen is a one-commit, mock-data-only prototype on a third-party account, so it is mined and rewired to read report.json, not depended upon.
+
+Scope was cut to Report-relevant screens so ADR-0004 stands: StartAnalysis, LiveExploration, the screen-graph Application Map (and @xyflow/react with it), the role switcher, and cross-run dashboard metrics are out — the CLI remains the only way to initiate a Run. Lumen's vocabulary is renamed to the glossary's (Journeys → Flows, Issues/Insights → Findings, its severity ladder → the three Finding tiers), and its Jira export is cut in favor of client-side Download JSON / Copy summary. Accepted costs: the npm tarball grows from ~26kB to roughly 150–200kB of built assets, and the dark dossier redesign is retired days after shipping — lumen's light theme is the product face.

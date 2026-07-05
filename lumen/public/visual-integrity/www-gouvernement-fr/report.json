@@ -1,0 +1,198 @@
+{
+  "runId": "2026-07-05T08-39-53-482Z-www-gouvernement-fr",
+  "target": "https://www.info.gouv.fr/",
+  "rulePackId": "dsfr-france",
+  "rulePackTitle": "DSFR — Système de Design de l'État",
+  "capturedAt": "2026-07-05T08:41:20.954Z",
+  "viewport": "1280x720",
+  "viewportWidth": 1280,
+  "actualFile": "actual.png",
+  "topRegionFile": "actual-top-region.png",
+  "topRegionHeight": 220,
+  "expectedFile": "expected-dsfr-header.png",
+  "expectedBandHeight": 96,
+  "expectedArtifacts": [
+    {
+      "id": "expected-dsfr-header",
+      "label": "Expected DSFR header (République Française)",
+      "file": "expected-dsfr-header.png",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 96
+      },
+      "sourceUrl": "https://www.systeme-de-design.gouv.fr/version-courante/fr/composants/en-tete/"
+    }
+  ],
+  "diffFile": "heatmap.png",
+  "changedPixels": 5222,
+  "changedRatio": 0.042496744791666666,
+  "overlays": [
+    {
+      "id": "rule-1",
+      "source": "design-contract",
+      "label": "DSFR header (République Française)",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 96
+      },
+      "severity": "high",
+      "rationale": "Expected by DSFR-HEADER-001: The top of the page shows the DSFR header with the Marianne mark and \"République Française\" identity block, per the Système de Design de l'État."
+    },
+    {
+      "id": "dom-2",
+      "source": "dom-geometry",
+      "label": "Detected header: \"GOUVERNEMENT\n\ninfo.gouv.fr\n\nLe site officiel du Gouvernement\n\nEspace presse\nParamètres d'affichage\nRecherche\nRechercher\n\"",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 192
+      }
+    },
+    {
+      "id": "dom-3",
+      "source": "dom-geometry",
+      "label": "Detected navigation: \"Contenu\nEntête de page\nMenu principal\nRecherche\nPied de page\"",
+      "box": {
+        "x": 0,
+        "y": -36,
+        "width": 575.8125,
+        "height": 24
+      }
+    },
+    {
+      "id": "dom-4",
+      "source": "dom-geometry",
+      "label": "Detected footer: \"Actualités\nToute l’actualité\nActualités du Premier ministre\nBudget\nSanté\nCe qui change\nVos questions, nos réponses\nVidéo\"",
+      "box": {
+        "x": 0,
+        "y": 5950.71875,
+        "width": 1280,
+        "height": 650.484375
+      }
+    },
+    {
+      "id": "dom-5",
+      "source": "dom-geometry",
+      "label": "Detected main content: \"À la Une\nFeux de forêt et canicule : le Gouvernement mobilisé\n\nVIDEO. Face à la multiplication des feux de forêt dans le\"",
+      "box": {
+        "x": 0,
+        "y": 192,
+        "width": 1280,
+        "height": 5538.71875
+      }
+    },
+    {
+      "id": "dom-6",
+      "source": "dom-geometry",
+      "label": "Detected aria banner region: \"GOUVERNEMENT\n\ninfo.gouv.fr\n\nLe site officiel du Gouvernement\n\nEspace presse\nParamètres d'affichage\nRecherche\nRechercher\n\"",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 192
+      }
+    },
+    {
+      "id": "diff-7",
+      "source": "pixel-diff",
+      "label": "Banner area — visual mismatch 1",
+      "box": {
+        "x": 16,
+        "y": 16,
+        "width": 128,
+        "height": 80
+      },
+      "confidence": 0.04375,
+      "severity": "medium",
+      "rationale": "Pixels in this region differ from the rendered expected CMS banner reference."
+    },
+    {
+      "id": "diff-8",
+      "source": "pixel-diff",
+      "label": "Banner area — visual mismatch 2",
+      "box": {
+        "x": 1136,
+        "y": 32,
+        "width": 112,
+        "height": 64
+      },
+      "confidence": 0.029166666666666667,
+      "severity": "medium",
+      "rationale": "Pixels in this region differ from the rendered expected CMS banner reference."
+    },
+    {
+      "id": "diff-9",
+      "source": "pixel-diff",
+      "label": "Banner area — visual mismatch 3",
+      "box": {
+        "x": 192,
+        "y": 48,
+        "width": 96,
+        "height": 16
+      },
+      "confidence": 0.0125,
+      "severity": "medium",
+      "rationale": "Pixels in this region differ from the rendered expected CMS banner reference."
+    },
+    {
+      "id": "diff-10",
+      "source": "pixel-diff",
+      "label": "Banner area — visual mismatch 4",
+      "box": {
+        "x": 1072,
+        "y": 32,
+        "width": 48,
+        "height": 16
+      },
+      "confidence": 0.00625,
+      "severity": "medium",
+      "rationale": "Pixels in this region differ from the rendered expected CMS banner reference."
+    }
+  ],
+  "violations": [
+    {
+      "ruleId": "DSFR-HEADER-001",
+      "standard": "DSFR",
+      "title": "Missing DSFR en-tête (République Française identity)",
+      "expected": "The top of the page shows the DSFR header with the Marianne mark and \"République Française\" identity block, per the Système de Design de l'État.",
+      "actual": "The top-of-page chrome region does not show République Française branding or DSFR header components (fr-header / fr-logo).",
+      "severity": "high",
+      "evidenceOverlayIds": [
+        "rule-1"
+      ],
+      "sourceUrl": "https://www.systeme-de-design.gouv.fr/version-courante/fr/composants/en-tete/"
+    }
+  ],
+  "timings": [
+    {
+      "stage": "captureAndStabilize",
+      "ms": 5128,
+      "overBudget": true
+    },
+    {
+      "stage": "screenshotAndDom",
+      "ms": 257,
+      "overBudget": false
+    },
+    {
+      "stage": "ruleChecks",
+      "ms": 1,
+      "overBudget": false
+    },
+    {
+      "stage": "pixelDiff",
+      "ms": 50,
+      "overBudget": false
+    },
+    {
+      "stage": "overlayGeneration",
+      "ms": 1,
+      "overBudget": false
+    }
+  ]
+}

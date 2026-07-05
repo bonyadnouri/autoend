@@ -1,0 +1,7 @@
+{
+  "id": "protected-route-login-redirect",
+  "title": "Unauthenticated visitor hitting Projects is redirected to login then lands on Projects",
+  "discoveredAt": "2026-07-04T19:20:46.611Z",
+  "lastPassedAt": "2026-07-04T19:25:00.201Z",
+  "schemaVersion": 1
+}

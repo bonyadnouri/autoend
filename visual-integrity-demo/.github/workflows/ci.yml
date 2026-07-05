@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, chore/initial-docs]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "23.6.0"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          node scripts/check-node-version.mjs
+          pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @hack-raise/runner exec playwright install --with-deps chromium
+
+      - name: Build
+        run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Autoend unit tests
+        run: pnpm test:autoend:unit
+
+      - name: Verify E2E scenario (seeded bug reproduction)
+        run: node scripts/verify-e2e-scenario.mjs user-dashboard-next
