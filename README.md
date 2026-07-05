@@ -15,6 +15,7 @@ npx @bonyadnouri/autoend         # agents test your app, a report opens
 ## Related projects
 
 - **[lumen](https://github.com/an2323/lumen)** — React dashboard for viewing Run results (tests, issues, investigations).
+- **[visual-integrity-demo](https://github.com/m2moiz/hack-raise/tree/visual-integrity-demo)** — visual integrity demo integrated from the hack-raise project.
 
 ## What is autoend?
 
