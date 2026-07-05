@@ -23,6 +23,7 @@ const USAGE = `Usage:
 Options:
   -e, --effort <level>   ${EFFORT_LEVELS.join(' | ')} (default: from config, else mid)
       --model <id>       Cursor model id for all agents (default: strongest available)
+      --runtime <where>  local | cloud — where explorers run (default: from config/env, else local)
   -h, --help             show this help
 `;
 
@@ -32,9 +33,21 @@ async function main(): Promise<void> {
     options: {
       effort: { type: 'string', short: 'e' },
       model: { type: 'string' },
+      runtime: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
+
+  // A --runtime flag (serve or a plain Run) overrides config/env for this process.
+  let runtimeFlag: 'local' | 'cloud' | undefined;
+  if (values.runtime !== undefined) {
+    if (values.runtime !== 'local' && values.runtime !== 'cloud') {
+      console.error(`error: unknown runtime "${values.runtime}" (expected local or cloud)`);
+      process.exitCode = 2;
+      return;
+    }
+    runtimeFlag = values.runtime;
+  }
 
   if (values.help) {
     process.stdout.write(USAGE);
@@ -54,7 +67,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'serve') {
-    await runServe({ repoRoot });
+    await runServe({ repoRoot, runtime: runtimeFlag });
     return;
   }
   if (positionals.length > 1) {
@@ -110,7 +123,7 @@ async function main(): Promise<void> {
     effort,
     repoRoot,
     model,
-    runtime: config?.runtime,
+    runtime: runtimeFlag ?? config?.runtime,
     cloudRepo: config?.cloudRepo,
   });
   const seconds = ((Date.now() - startedMs) / 1000).toFixed(1);

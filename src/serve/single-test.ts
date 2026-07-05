@@ -91,5 +91,7 @@ export async function publishSingleTestArtifact(
   artifact: RunArtifact,
   analysisId?: string,
 ): Promise<void> {
-  await publishRun(artifact, join(artifactDir, 'evidence'), analysisId);
+  // Merge, don't replace: a single-test re-run must update only its own test's
+  // rows and leave the rest of the project's tests/journeys/issues intact.
+  await publishRun(artifact, join(artifactDir, 'evidence'), analysisId, 'merge');
 }

@@ -40,4 +40,8 @@ export class CompositeReporter implements RunReporter {
   async testStatus(update: TestStatusFact): Promise<void> {
     await Promise.all(this.reporters.map((r) => safe(r, 'testStatus', [update])));
   }
+
+  async flush(): Promise<void> {
+    await Promise.all(this.reporters.map((r) => safe(r, 'flush', [])));
+  }
 }

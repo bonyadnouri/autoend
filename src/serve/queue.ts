@@ -94,6 +94,10 @@ export class SupabaseQueue implements RunQueue {
   }
 
   async markFinished(runId: string, summary: RunSummary): Promise<void> {
+    // Only a run still 'running' may be settled. Guarding on status stops this
+    // from resurrecting a run a user cancelled mid-flight (cancelled → finished)
+    // — the lifecycle is queued → running → finished/failed/cancelled, and a
+    // terminal state is final.
     const { error } = await this.supabase
       .from('runs')
       .update({
@@ -106,7 +110,8 @@ export class SupabaseQueue implements RunQueue {
           findingCounts: summary.findingCounts,
         },
       })
-      .eq('id', runId);
+      .eq('id', runId)
+      .eq('status', 'running');
     if (error) throw error;
   }
 

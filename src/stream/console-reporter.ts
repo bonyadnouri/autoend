@@ -41,4 +41,5 @@ export class ConsoleReporter implements RunReporter {
   }
   async edgeSeen(): Promise<void> {}
   async testStatus(): Promise<void> {}
+  async flush(): Promise<void> {}
 }

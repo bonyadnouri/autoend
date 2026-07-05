@@ -1,9 +1,37 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { RunEvent } from './events.js';
 import { screenTitle } from './screen-id.js';
-import type { EdgeFact, RunReporter, RunStartedInfo, RunSummary, ScreenFact, TestStatusFact } from './reporter.js';
+import type {
+  EdgeFact,
+  RunReporter,
+  RunStartedInfo,
+  RunSummary,
+  ScreenFact,
+  TestStatusFact,
+} from './reporter.js';
 
 const SCREEN_ACCENT = 'slate';
+
+/**
+ * Screen-status precedence for live streaming. A run touches a screen many
+ * times (a live 'running' on navigation, a settled 'passed'/'failed', a
+ * discovered-flow revisit) and flows replay in parallel, so writes arrive in
+ * an unpredictable order. Ranking lets a stream write RAISE a screen's status
+ * but never DOWNGRADE one already settled THIS run — the bug behind both
+ * "screens stuck cyan on 'running'" (a later terminal state simply wins) and
+ * "a passing/discovered flow greened-over a failure". 'broken'/'healthy' are
+ * only ever written by publish (direct, post-stream); listed so a stale prior
+ * value never blocks a fresh write. Higher = more severe / more final.
+ */
+const SCREEN_RANK: Record<string, number> = {
+  running: 0,
+  discovered: 1,
+  passed: 2,
+  healthy: 2,
+  warning: 3,
+  failed: 4,
+  broken: 5,
+};
 
 function screenType(path: string): string {
   if (path === '/') return 'entry';
@@ -47,8 +75,12 @@ export class SupabaseReporter implements RunReporter {
     });
   }
 
-  private flush(): Promise<void> {
+  private awaitChain(): Promise<void> {
     return this.chain;
+  }
+
+  async flush(): Promise<void> {
+    await this.awaitChain();
   }
 
   async runStarted(info: RunStartedInfo): Promise<void> {
@@ -107,19 +139,26 @@ export class SupabaseReporter implements RunReporter {
 
   async runFinished(summary: RunSummary): Promise<void> {
     this.enqueue(async () => {
-      const { error } = await this.supabase
-        .from('runs')
-        .update({
-          status: summary.status,
-          finished_at: new Date().toISOString(),
-          error: summary.error ?? null,
-          summary: {
-            flowsReplayed: summary.flowsReplayed,
-            flowsDiscovered: summary.flowsDiscovered,
-            findingCounts: summary.findingCounts,
-          },
-        })
-        .eq('id', summary.runId);
+      // Record the summary counts live either way. On SUCCESS, do NOT flip the
+      // row to 'finished' here: publish still runs AFTER this (it writes
+      // journeys, insights and the analysis summary), and the daemon calls
+      // queue.markFinished once publish completes — so the row goes 'finished'
+      // only when the graph is fully written, never showing a "finished" run
+      // with half-written data. A FAILURE is written immediately so it surfaces
+      // without waiting on anything downstream.
+      const patch: Record<string, unknown> = {
+        summary: {
+          flowsReplayed: summary.flowsReplayed,
+          flowsDiscovered: summary.flowsDiscovered,
+          findingCounts: summary.findingCounts,
+        },
+      };
+      if (summary.status === 'failed') {
+        patch.status = 'failed';
+        patch.finished_at = new Date().toISOString();
+        patch.error = summary.error ?? null;
+      }
+      const { error } = await this.supabase.from('runs').update(patch).eq('id', summary.runId);
       if (error) throw error;
     });
     await this.flush();
@@ -145,20 +184,43 @@ export class SupabaseReporter implements RunReporter {
       // an enrichment fact (elements/nav) omits status so it never downgrades a
       // status a flow already settled, and never wipes elements it didn't capture.
       const patch: Record<string, unknown> = { name, last_run_id: this.runId };
-      if (screen.status !== undefined) patch.status = screen.status;
       if (screen.elements !== undefined) patch.elements = screen.elements;
       if (screen.navigation !== undefined) patch.navigation = screen.navigation;
       if (screen.expectedActions !== undefined) patch.expected_actions = screen.expectedActions;
-      // Update-first so repeat visits and re-runs never clobber a screen's
-      // stored layout position (upsert would rewrite position back to 0,0).
-      const { data: updated, error: updateError } = await this.supabase
+
+      // Read the current row first: it tells us whether to insert vs update AND
+      // (with last_run_id) lets us apply status precedence. Reading also keeps
+      // the update from clobbering the stored layout position (we never patch it).
+      const { data: existing, error: readError } = await this.supabase
         .from('screens')
-        .update(patch)
+        .select('status, last_run_id')
         .eq('analysis_id', this.analysisId)
         .eq('id', screen.id)
-        .select('id');
-      if (updateError) throw updateError;
-      if (updated && updated.length > 0) return;
+        .maybeSingle();
+      if (readError) throw readError;
+
+      // Apply status only when it doesn't DOWNGRADE one already settled this run
+      // (failed > warning > passed > discovered > running). A status from a
+      // PRIOR run (different last_run_id) is stale and may always be replaced —
+      // that's how a fixed test's re-run clears its old red on the screen.
+      if (screen.status !== undefined) {
+        const sameRun = existing?.last_run_id === this.runId;
+        const downgrade =
+          existing !== null &&
+          sameRun &&
+          SCREEN_RANK[screen.status] < (SCREEN_RANK[existing.status as string] ?? -1);
+        if (!downgrade) patch.status = screen.status;
+      }
+
+      if (existing !== null) {
+        const { error } = await this.supabase
+          .from('screens')
+          .update(patch)
+          .eq('analysis_id', this.analysisId)
+          .eq('id', screen.id);
+        if (error) throw error;
+        return;
+      }
 
       // Enrichment facts (explorer-reported elements/nav) must never CREATE a
       // screen — only a real, verified navigation may. This stops an agent from
@@ -231,75 +293,40 @@ export class SupabaseReporter implements RunReporter {
     this.enqueue(async () => {
       const previouslyPassed =
         update.status === 'passed' || update.status === 'healed' || update.status === 'discovered';
-      const { error } = await this.supabase.from('tests').upsert(
-        {
-          analysis_id: this.analysisId,
-          id: update.testId,
-          name: update.title,
-          journey_id: '',
-          screen_ids: [],
-          preconditions: [],
-          steps: (update.timeline ?? []).map((step) => ({
-            action: step.label,
-            expected: step.status === 'passed' ? 'Step succeeds' : 'Step fails',
-          })),
-          repro_steps: (update.timeline ?? []).map((step, index) => `${index + 1}. ${step.label}`),
-          expected_result: 'Flow completes without regressions',
-          actual_result: update.detail ?? '',
-          status: testDbStatus(update.status),
-          duration_ms: update.durationMs ?? 0,
-          related_issue_ids: [],
-          has_investigation: update.status === 'failed',
-          last_run_id: this.runId,
-          previously_passed: previouslyPassed,
-        },
-        { onConflict: 'analysis_id,id' },
-      );
+      const row: Record<string, unknown> = {
+        analysis_id: this.analysisId,
+        id: update.testId,
+        name: update.title,
+        journey_id: '',
+        screen_ids: [],
+        preconditions: [],
+        steps: (update.timeline ?? []).map((step) => ({
+          action: step.label,
+          expected: step.status === 'passed' ? 'Step succeeds' : 'Step fails',
+        })),
+        repro_steps: (update.timeline ?? []).map((step, index) => `${index + 1}. ${step.label}`),
+        expected_result: 'Flow completes without regressions',
+        actual_result: update.detail ?? '',
+        status: testDbStatus(update.status),
+        duration_ms: update.durationMs ?? 0,
+        related_issue_ids: [],
+        has_investigation: update.status === 'failed',
+        last_run_id: this.runId,
+        previously_passed: previouslyPassed,
+      };
+      // Stream the script with the status so the row is replayable immediately.
+      // The daemon's next run hydrates its flow map from `tests.script`; before
+      // this, the script only landed at publish — so a run that died pre-publish
+      // (crash, Ctrl+C, swallowed publish error) left every row script-less and
+      // the NEXT run silently replayed nothing. Only set when carried, so a
+      // 'running' fact never nulls a script an earlier run already stored.
+      if (update.script !== undefined) row.script = update.script;
+      const { error } = await this.supabase.from('tests').upsert(row, { onConflict: 'analysis_id,id' });
       if (error) throw error;
-
-      if (update.status === 'failed' && (update.console?.length || update.network?.length)) {
-        const payload = {
-          testId: update.testId,
-          recordedReason: update.detail ?? update.title,
-          logs: (update.console ?? []).map((entry, index) => ({
-            id: `log-${index}`,
-            level:
-              entry.level === 'error'
-                ? 'error'
-                : entry.level === 'warning'
-                  ? 'warn'
-                  : entry.level === 'debug'
-                    ? 'debug'
-                    : 'info',
-            source: 'console',
-            tMs: entry.tMs,
-            message: entry.text,
-          })),
-          network: (update.network ?? []).map((entry, index) => ({
-            id: `net-${index}`,
-            method: entry.method.toUpperCase(),
-            endpoint: entry.url,
-            status: entry.status,
-            durationMs: entry.durationMs ?? 0,
-            failed: entry.status === 0 || entry.status >= 400,
-            tMs: entry.tMs,
-          })),
-          timeline: (update.timeline ?? []).map((step) => ({
-            tMs: step.tMs,
-            screenId: '',
-            label: step.label,
-            kind: step.status === 'failed' ? 'failure' : 'action',
-          })),
-        };
-        await this.supabase.from('investigations').upsert(
-          {
-            analysis_id: this.analysisId,
-            test_id: update.testId,
-            payload,
-          },
-          { onConflict: 'analysis_id,test_id' },
-        );
-      }
+      // Investigations (video, screenshots, full payload) are written ONLY by
+      // publishRun after evidence is uploaded. Writing a stub here used to race
+      // publish and overwrite replay.videoUrl back to null — the UI showed no
+      // video even though the WebM uploaded fine.
     });
   }
 }

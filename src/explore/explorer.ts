@@ -83,7 +83,8 @@ export interface ReportedScreen {
 
 export interface ExplorerReport {
   flows: ProposedFlow[];
-  findings: Array<{ kind: 'hard-failure' | 'advisory'; title: string; detail: string }>;
+  /** `screen`: the page path the explorer was on when it saw the finding. */
+  findings: Array<{ kind: 'hard-failure' | 'advisory'; title: string; detail: string; screen?: string }>;
   /** Interactive elements + navigation per screen the explorer visited. */
   screens?: ReportedScreen[];
   /** Deep path only (ADR-0007/0008); absent on smoke reports. */
@@ -144,12 +145,16 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
     ),
   );
 
-  const findings = await collectReportedFindings(reports, (i) => `explore-${i}`, opts.evidenceDir);
-  // Enrich screens with captured structure before admitting flows, so a bad-end
-  // flow can still settle its last screen 'failed' afterwards (status wins).
-  await emitReportedScreens(reports, opts);
+  const findings = await collectReportedFindings(reports, (i) => `explore-${i}`, opts.evidenceDir, opts.target);
   const proposed = collectProposedFlows(reports, opts.knownFlows);
   const flowSnapshots = await admitProposedFlows(proposed, opts, workDir);
+  // Enrich AFTER admitting flows: a newly discovered flow's screens only exist
+  // once it's been replayed (screenSeen creates them here), and enrichment is
+  // enrichOnly — it updates existing rows, never creates them. Running it before
+  // admit dropped every discovered screen's elements/nav (no row yet), leaving
+  // "0 elements" on a fresh project. Enrichment omits status, so the statuses
+  // admit/replay already settled (incl. a bad-end 'failed') still win.
+  await emitReportedScreens(reports, opts);
   return { discovered: flowSnapshots.length, findings, flows: flowSnapshots };
 }
 
@@ -199,6 +204,7 @@ export async function collectReportedFindings(
   reports: Array<ExplorerReport | undefined>,
   videoBase: (index: number) => string,
   evidenceDir: string,
+  target: URL,
 ): Promise<Finding[]> {
   const findings: Finding[] = [];
   for (const [i, report] of reports.entries()) {
@@ -222,6 +228,9 @@ export async function collectReportedFindings(
         kind: f.kind,
         title: f.title,
         detail: f.detail,
+        // Attribute the finding to the page the explorer saw it on so publish
+        // can redden that screen node. Only when it resolves to a real path.
+        screenId: f.screen ? toScreenId(f.screen, target) : undefined,
         evidence,
       });
     }
@@ -230,9 +239,14 @@ export async function collectReportedFindings(
 }
 
 /**
- * Verify-by-running (ADR-0002): execute each proposed Flow script; only ones
- * that pass enter the Flow Map. Scripts are LLM-authored and run in-process,
- * so secrets are hidden for the duration (issue #3).
+ * Verify-by-running (ADR-0002): execute each proposed Flow script. A flow that
+ * passes enters the Flow Map; a flow that FAILS (script threw, or it ended on
+ * an error page) is recorded as a FAILED test — never silently discarded. The
+ * failure is a real result: the explorer saw the path work, the verification
+ * run proved it broken, and the user needs that negative test on the board.
+ * Failed flows keep their script in the DB, so the daemon replays them every
+ * run until they pass. Scripts are LLM-authored and run in-process, so secrets
+ * are hidden for the duration (issue #3).
  */
 export async function admitProposedFlows(
   proposed: ProposedFlow[],
@@ -253,39 +267,59 @@ export async function admitProposedFlows(
           flowTitle: flow.title,
           discover: true,
         });
-        if (outcome.ok) {
-          const now = new Date().toISOString();
-          // A flow that ran clean but ended on an HTTP error page is a broken
-          // path, not a verified one: keep it OUT of the Flow Map (we never want
-          // to replay a known-bad path as if it were a working flow). The 404
-          // destination itself is already dropped by runFlowScript, so every id
-          // left in visitedScreenIds is a real page — emit them all as discovered.
-          const badEnd = outcome.badEndState;
-          const ids = outcome.visitedScreenIds;
-          for (const id of ids) {
-            await opts.reporter?.screenSeen({ id, path: id, status: 'discovered' });
-          }
-          if (!badEnd) {
-            await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
-          } else {
-            console.warn(`discovered flow "${flow.id}" ends on an error page (${badEnd}); recorded as failed`);
-          }
-          flowSnapshots.push({
-            id: flow.id,
-            title: flow.title,
-            status: badEnd ? 'failed' : 'discovered',
-            discoveredAt: now,
-            lastPassedAt: badEnd ? undefined : now,
-            timeline: outcome.timeline,
-            evidence: outcome.evidence,
-            durationMs: outcome.durationMs,
-            console: outcome.console,
-            network: outcome.network,
-            script: flow.script,
-          });
-        } else {
-          console.warn(`proposed flow "${flow.id}" failed verification and was discarded: ${outcome.error}`);
+        // Settle EVERY good screen this verification touched to 'discovered' so
+        // none stay stuck at the transient 'running' set during navigation —
+        // including when the flow FAILS verification below (its pages still
+        // loaded fine; only the flow's goal or a bad destination failed). The
+        // 404/error destinations are already dropped by runFlowScript, so every
+        // id here is a real page. Reporter precedence keeps this from downgrading
+        // a screen a replay flow already settled 'passed'/'failed'.
+        for (const id of outcome.visitedScreenIds) {
+          await opts.reporter?.screenSeen({ id, path: id, status: 'discovered' });
         }
+        // Everything that fails is a FAIL: a thrown script and a flow that ran
+        // clean but ended on an error page are both failed tests. No tiers, no
+        // discarding — the explorer proposed the path because it looked real,
+        // and the verification run just proved it broken on this app.
+        const failureReason = outcome.ok ? outcome.badEndState : (outcome.error ?? 'unknown failure');
+        const failed = Boolean(failureReason);
+        const now = new Date().toISOString();
+        if (failed) {
+          console.warn(`discovered flow "${flow.id}" failed verification; recorded as a failed test: ${failureReason}`);
+        } else {
+          // Only a flow that actually passed enters the Flow Map as a known-good
+          // baseline; failed ones live in the DB (script included) and are
+          // replayed from there every run until they pass.
+          await addFlow(opts.repoRoot, { id: flow.id, title: flow.title, discoveredAt: now, lastPassedAt: now }, flow.script);
+        }
+        // Stream the test row NOW, script included — publish also writes it,
+        // but a run that dies before publishing would otherwise leave this
+        // flow with no DB row at all, and the daemon's next hydration (which
+        // rebuilds the flow map from tests.script) would erase it everywhere.
+        await opts.reporter?.testStatus({
+          testId: flow.id,
+          title: flow.title,
+          status: failed ? 'failed' : 'discovered',
+          detail: failureReason,
+          console: outcome.console,
+          network: outcome.network,
+          timeline: outcome.timeline,
+          durationMs: outcome.durationMs,
+          script: flow.script,
+        });
+        flowSnapshots.push({
+          id: flow.id,
+          title: flow.title,
+          status: failed ? 'failed' : 'discovered',
+          discoveredAt: now,
+          lastPassedAt: failed ? undefined : now,
+          timeline: outcome.timeline,
+          evidence: outcome.evidence,
+          durationMs: outcome.durationMs,
+          console: outcome.console,
+          network: outcome.network,
+          script: flow.script,
+        });
       }
     } finally {
       await browser.close();
@@ -503,6 +537,7 @@ ${hardRules(target.origin)}
 2. FINDINGS —
    - kind "hard-failure": objective breakage — a link/button you CLICKED that leads to a 404/error page (a broken link), HTTP 5xx, console/page errors, crashes, blank pages. Include the exact control text, URL, and HTTP status.
    - kind "advisory": (a) an expected-but-missing page — a standard page you expected that had NO control linking to it, so you tried its URL directly and got a 404 — titled like "Expected page \\"/signup\\" but it was not present (HTTP 404)"; and (b) your judgment on UX, accessibility, or speed. Be sparing; only what a developer would thank you for.
+   - For EVERY finding, set "screen" to the path of the page you were ON when you observed it (e.g. "/dashboard") — that is the node it gets flagged on in the map. Omit only if it truly has no page.
 3. ${screenCaptureRules()}
 
 ## Final message — STRICT
@@ -512,7 +547,7 @@ Reply with ONLY one JSON object, no prose, no markdown fences:
     { "id": "kebab-case-id", "title": "Visitor does something meaningful", "script": "export default async function flow(page, target) { ... }" }
   ],
   "findings": [
-    { "kind": "hard-failure", "title": "Short statement", "detail": "Exact evidence: error text, URL, HTTP status" }
+    { "kind": "hard-failure", "title": "Short statement", "detail": "Exact evidence: error text, URL, HTTP status", "screen": "/dashboard" }
   ]${SCREENS_CONTRACT}${evidenceField}
 }
 Empty arrays are fine. An honest empty report beats an invented one.`;
@@ -552,6 +587,7 @@ export function parseExplorerReport(text: string): ExplorerReport | undefined {
         kind: f.kind === 'hard-failure' ? 'hard-failure' : 'advisory',
         title: f.title,
         detail: typeof f.detail === 'string' ? f.detail : '',
+        screen: typeof f.screen === 'string' ? f.screen : undefined,
       });
     }
   }

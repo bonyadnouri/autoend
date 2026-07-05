@@ -1,14 +1,15 @@
 import pc from 'picocolors';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { rm } from 'node:fs/promises';
-import { loadConfig, loadDotEnv } from '../config.js';
-import { listAvailableModels } from '../agents/harness.js';
+import { loadConfig, loadDotEnv, resolveRuntime } from '../config.js';
+import { listAvailableModels, type AgentRuntime } from '../agents/harness.js';
 import { getSupabase, isSupabaseConfigured, resolveAnalysisId } from '../publish/supabase-client.js';
 import { publishRun } from '../publish/publish.js';
 import { addFlow, flowMapDir } from '../map/flow-map.js';
 import { join } from 'node:path';
 import { isEffort, type Effort } from '../run/effort.js';
 import { executeRun } from '../run/run.js';
+import type { RunArtifact } from '../report/types.js';
 import { CompositeReporter, ConsoleReporter, createReporter } from '../stream/index.js';
 import { executeSingleTestRun, publishSingleTestArtifact } from './single-test.js';
 import { SupabaseQueue, type RunQueue, type RunRequest } from './queue.js';
@@ -17,12 +18,29 @@ const POLL_MS = 5_000;
 
 export interface ServeOptions {
   repoRoot: string;
+  /** Where explorers run for every served run; overrides config/env. */
+  runtime?: AgentRuntime;
 }
 
 async function resolveTarget(request: RunRequest, repoRoot: string): Promise<URL> {
   if (request.targetUrl) return new URL(request.targetUrl);
+  // No target on the run: use the PROJECT's own URL (its analyses row). The
+  // daemon serves many projects, so the local .autoend/config.json target
+  // (often localhost) is only a last resort — falling back to it for a re-run
+  // queued from the UI would replay the test against the wrong app entirely.
+  if (request.analysisId) {
+    const supabase = getSupabase();
+    if (supabase) {
+      const { data } = await supabase
+        .from('analyses')
+        .select('app_url')
+        .eq('id', request.analysisId)
+        .maybeSingle();
+      if (data?.app_url) return new URL(data.app_url as string);
+    }
+  }
   const config = await loadConfig(repoRoot);
-  if (!config?.target) throw new Error('no target_url on run and no target in .autoend/config.json');
+  if (!config?.target) throw new Error('no target_url on run, no app_url on its analysis, and no target in .autoend/config.json');
   return new URL(config.target);
 }
 
@@ -91,7 +109,27 @@ async function hydrateFlowMapFromDb(workspace: string, analysisId: string): Prom
   return rows.length;
 }
 
-async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue): Promise<void> {
+/**
+ * Publish results without letting a publish failure fail the run. Publishing
+ * runs after the run itself has completed (screens/tests already streamed live),
+ * so a publish error is a reporting problem, not a run failure — log it and
+ * leave the run 'finished' rather than flipping a successful run to 'failed'.
+ */
+async function publishSafely(label: string, publish: () => Promise<unknown>): Promise<void> {
+  try {
+    await publish();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(pc.red(`publish (${label}) failed; run kept as finished: ${message}`));
+  }
+}
+
+async function processRun(
+  request: RunRequest,
+  repoRoot: string,
+  queue: RunQueue,
+  runtime: AgentRuntime,
+): Promise<void> {
   try {
     const target = await resolveTarget(request, repoRoot);
     const effort = await resolveEffort(request, repoRoot);
@@ -116,9 +154,10 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
     });
     const reporter = new CompositeReporter([new ConsoleReporter(), streamReporter]);
 
+    let artifact: RunArtifact;
     if (request.kind === 'single-test') {
       if (!request.testId) throw new Error('single-test run missing test_id');
-      const { artifactDir, artifact } = await executeSingleTestRun({
+      const result = await executeSingleTestRun({
         repoRoot: workspace,
         target,
         runId: request.runId,
@@ -127,9 +166,16 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
         effort,
         kind: 'single-test',
       });
-      await publishSingleTestArtifact(artifactDir, artifact, analysisId);
+      artifact = result.artifact;
+      // Drain the streaming reporter BEFORE publish. testStatus calls are
+      // fire-and-forget on an internal queue — without this, a late queued write
+      // could land after publish and wipe investigation video URLs back to null.
+      await reporter.flush();
+      await publishSafely('single-test', () =>
+        publishSingleTestArtifact(result.artifactDir, result.artifact, analysisId),
+      );
     } else {
-      const { artifactDir, artifact } = await executeRun({
+      const result = await executeRun({
         repoRoot: workspace,
         target,
         effort,
@@ -138,11 +184,32 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
         reporter,
         // The UI's per-run choice wins; env/config are the daemon's defaults.
         model: request.model ?? process.env.AUTOEND_MODEL ?? config?.model,
-        runtime: config?.runtime,
+        runtime,
         cloudRepo: config?.cloudRepo,
       });
-      await publishRun(artifact, join(artifactDir, 'evidence'), analysisId);
+      artifact = result.artifact;
+      await reporter.flush();
+      await publishSafely('run', () =>
+        publishRun(result.artifact, join(result.artifactDir, 'evidence'), analysisId),
+      );
     }
+
+    // Authoritative finish, AFTER publish. The streaming reporter also flips the
+    // row to 'finished', but it's fire-and-forget and swallows DB errors — a
+    // dropped update would leave the run stuck 'running' forever. Marking it here
+    // is the backstop. A publish failure above is logged, not thrown: the run
+    // itself succeeded, so it must never be reported as 'failed' (which is what
+    // would happen if a publish error fell through to the catch below).
+    await queue.markFinished(request.runId, {
+      runId: request.runId,
+      status: 'finished',
+      flowsReplayed: artifact.flowsReplayed,
+      flowsDiscovered: artifact.flowsDiscovered,
+      findingCounts: artifact.findings.reduce<Record<string, number>>((acc, f) => {
+        acc[f.kind] = (acc[f.kind] ?? 0) + 1;
+        return acc;
+      }, {}),
+    });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(pc.red(`run ${request.runId} failed: ${errorMessage}`));
@@ -177,11 +244,13 @@ async function publishModels(supabase: SupabaseClient): Promise<void> {
     return;
   }
   // Prune models no longer offered so the picker never shows dead options.
+  // JSON.stringify quotes/escapes each id so an id with a comma or quote can't
+  // break (or mis-target) the PostgREST `in.(...)` list — same guard publish uses.
   const ids = models.map((m) => m.id);
   const { error: pruneError } = await supabase
     .from('ai_models')
     .delete()
-    .not('id', 'in', `(${ids.map((id) => `"${id}"`).join(',')})`);
+    .not('id', 'in', `(${ids.map((id) => JSON.stringify(String(id))).join(',')})`);
   if (pruneError) console.warn(pc.yellow(`could not prune ai_models: ${pruneError.message}`));
   console.log(pc.cyan('published models') + pc.dim(` · ${ids.join(', ')}`));
 }
@@ -196,6 +265,11 @@ export async function runServe(opts: ServeOptions): Promise<never> {
   if (!supabase) throw new Error('could not create Supabase client');
 
   const config = await loadConfig(opts.repoRoot);
+  // Where explorers run for every served run: the --runtime flag wins, then
+  // AUTOEND_RUNTIME / config.runtime, else local. On Windows/macOS hosts where
+  // local agent tooling is flaky, `serve --runtime cloud` runs each explorer in
+  // a Cursor Linux VM instead.
+  const runtime = opts.runtime ?? resolveRuntime(config);
   // By default the daemon serves EVERY project: it claims any queued run and
   // uses that run's own analysis_id. Pin it to a single project only when one is
   // explicitly configured (AUTOEND_ANALYSIS_ID env or config.analysisId).
@@ -204,7 +278,9 @@ export async function runServe(opts: ServeOptions): Promise<never> {
 
   console.log(
     pc.cyan('autoend serve') +
-      pc.dim(` · watching ${scopedAnalysisId ? `analysis ${scopedAnalysisId}` : 'all projects'}`),
+      pc.dim(
+        ` · watching ${scopedAnalysisId ? `analysis ${scopedAnalysisId}` : 'all projects'} · runtime ${runtime}`,
+      ),
   );
 
   // Start idle: cancel any run left over from a previous session so the daemon
@@ -234,7 +310,7 @@ export async function runServe(opts: ServeOptions): Promise<never> {
       // another was executing isn't stranded until the next poll.
       let request = await queue.claimNext();
       while (request) {
-        await processRun(request, opts.repoRoot, queue);
+        await processRun(request, opts.repoRoot, queue, runtime);
         request = await queue.claimNext();
       }
     } catch (error) {

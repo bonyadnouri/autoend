@@ -10,4 +10,5 @@ export const NoopReporter: RunReporter = {
   screenDropped: noop,
   edgeSeen: noop,
   testStatus: noop,
+  flush: noop,
 };

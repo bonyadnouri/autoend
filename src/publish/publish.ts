@@ -12,6 +12,14 @@ export interface PublishResult {
   investigations: number;
 }
 
+/**
+ * How a publish reconciles with existing project data:
+ *   - 'replace': a full run — prune the analysis down to this run's rows.
+ *   - 'merge': a single-test re-run — upsert only the affected rows and keep
+ *     every other test/journey/issue/insight/screen-link in the project.
+ */
+export type PublishMode = 'replace' | 'merge';
+
 /** Row shapes mirror the Lumen Supabase schema (see 001_schema.sql / dbMappers.ts). */
 interface TestRow {
   id: string;
@@ -211,7 +219,10 @@ function networkRows(entries: NetworkEntry[] | undefined): Array<Record<string, 
     endpoint: entry.url,
     status: entry.status,
     durationMs: entry.durationMs ?? 0,
-    failed: entry.status === 0 || entry.status >= 400,
+    // Only a real HTTP error is a failure. Status 0 means the request never got
+    // a response — usually a benign abort (SPA navigation cancelling in-flight
+    // fetches/prefetches), not something the app got wrong.
+    failed: entry.status >= 400,
     tMs: entry.tMs,
   }));
 }
@@ -358,7 +369,7 @@ function buildIssues(artifact: RunArtifact, analysisId: string): IssueRow[] {
     title: finding.title,
     description: finding.detail,
     severity: severity(finding.kind),
-    related_screen_id: '',
+    related_screen_id: finding.screenId ?? '',
     related_journey_id: null,
     suggested_fix: finding.diagnosis?.rootCause ?? '',
     related_test_ids: [subjectId(finding)],
@@ -537,18 +548,76 @@ function throwOnError(context: string, error: { message: string } | null): void 
 }
 
 /**
- * Replace this analysis's rows in `table` with `rows`, atomically-enough
- * without a transaction: upsert the fresh rows FIRST, then delete only the
- * stale ones (same analysis, id no longer present). Upserting before deleting
- * means a mid-publish failure leaves the previous Run's data intact rather than
- * an emptied analysis — the delete-then-insert order did the opposite.
+ * Recompute the analysis summary from what's CURRENTLY in the database for this
+ * project, not from a single run's artifact. A single-test re-run's artifact
+ * holds one flow — deriving the summary from it would report `tests_executed:
+ * 1` and erase the project's real totals. Merge-mode publishes count the whole
+ * project so a re-run only moves the numbers for the test that changed.
  */
-async function replaceRows(
+async function summaryFromDb(
+  supabase: SupabaseClient,
+  artifact: RunArtifact,
+  analysisId: string,
+): Promise<Record<string, unknown>> {
+  const { data: testRows, error: testError } = await supabase
+    .from('tests')
+    .select('status')
+    .eq('analysis_id', analysisId);
+  throwOnError('read tests for summary', testError);
+  const rows = testRows ?? [];
+  const passed = rows.filter((r) => r.status === 'pass').length;
+  const failed = rows.filter((r) => r.status === 'fail').length;
+  const notExecuted = rows.filter((r) => r.status === 'not-executed').length;
+
+  const { count: journeyCount, error: journeyError } = await supabase
+    .from('journeys')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_id', analysisId);
+  throwOnError('count journeys', journeyError);
+  const { count: screenCount, error: screenError } = await supabase
+    .from('screens')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_id', analysisId);
+  throwOnError('count screens', screenError);
+  const { count: criticalCount, error: criticalError } = await supabase
+    .from('issues')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_id', analysisId)
+    .eq('severity', 'critical');
+  throwOnError('count critical issues', criticalError);
+
+  return {
+    app_name: appName(artifact.target),
+    app_url: artifact.target,
+    analyzed_at: artifact.finishedAt ?? artifact.startedAt,
+    user_flows: journeyCount ?? 0,
+    screens_discovered: screenCount ?? 0,
+    tests_executed: passed + failed,
+    tests_passed: passed,
+    tests_failed: failed,
+    tests_not_executed: notExecuted,
+    critical_issues: criticalCount ?? 0,
+  };
+}
+
+/**
+ * Upsert this analysis's rows in `table`, and (in 'replace' mode) prune the
+ * stale ones. Two modes:
+ *   - 'replace' (full run): upsert the fresh rows FIRST, then delete the ones
+ *     no longer present (same analysis, id not in the new set). Upsert-before-
+ *     delete means a mid-publish failure leaves the previous Run's data intact
+ *     rather than an emptied analysis.
+ *   - 'merge' (single-test re-run): upsert ONLY, never prune — re-running one
+ *     test must update its own row and leave every other test/journey/issue in
+ *     the project untouched. Pruning here would wipe the whole project.
+ */
+async function upsertRows(
   supabase: SupabaseClient,
   table: string,
   idColumn: string,
   rows: Array<Record<string, unknown>>,
   analysisId: string,
+  prune: boolean,
 ): Promise<void> {
   if (rows.length > 0) {
     throwOnError(
@@ -556,6 +625,7 @@ async function replaceRows(
       (await supabase.from(table).upsert(rows, { onConflict: `analysis_id,${idColumn}` })).error,
     );
   }
+  if (!prune) return;
   // Quote each id for the PostgREST `in.(...)` list. Ids are string paths/slugs
   // (e.g. `/login`, `missing-/gone`) that can contain `/`, `,`, and other
   // separators; JSON.stringify wraps them in double quotes and escapes any
@@ -563,9 +633,9 @@ async function replaceRows(
   // raw comma/slash. Unquoted joining silently pruned or kept the wrong rows.
   const keepIds = rows.map((row) => JSON.stringify(String(row[idColumn])));
   const pruneAll = supabase.from(table).delete().eq('analysis_id', analysisId);
-  const prune =
+  const pruneQuery =
     keepIds.length > 0 ? pruneAll.not(idColumn, 'in', `(${keepIds.join(',')})`) : pruneAll;
-  throwOnError(`prune ${table}`, (await prune).error);
+  throwOnError(`prune ${table}`, (await pruneQuery).error);
 }
 
 /**
@@ -640,12 +710,16 @@ async function reconcileExpectedMissingScreens(
 }
 
 /**
- * Back-link screens to the tests and issues that touch them. Screen rows are
- * streamed by the reporter with empty `test_case_ids`/`issue_ids`; publish is
- * the first point that knows the full journey→screen→test/issue graph, so it
- * fills those in. A screen's tests are every flow whose journey stepped through
- * it; its issues are every finding raised on one of those flows. Only screens
- * that already exist are patched — publish never creates screens here.
+ * Back-link screens to the tests and issues that touch them, and redden any
+ * screen carrying a real failure. Screen rows are streamed by the reporter with
+ * empty `test_case_ids`/`issue_ids`; publish is the first point that knows the
+ * full journey→screen→test/issue graph, so it fills those in. A screen's tests
+ * are every flow whose journey stepped through it; its issues are every finding
+ * raised on one of those flows PLUS every finding attributed directly to it
+ * (finding.screenId — how explorer hard-failures reach the map). A screen with
+ * a critical/high issue is set 'broken' so the map shows red where a failure
+ * actually happened; lower-severity (advisory) issues never change its status.
+ * Only screens that already exist are patched — publish never creates them here.
  */
 async function reconcileScreenLinks(
   supabase: SupabaseClient,
@@ -655,12 +729,13 @@ async function reconcileScreenLinks(
 ): Promise<void> {
   const { data: rows, error } = await supabase
     .from('screens')
-    .select('id')
+    .select('id, status')
     .eq('analysis_id', analysisId);
   throwOnError('read screens for linking', error);
-  const existing = new Set((rows ?? []).map((r) => r.id as string));
+  const existing = new Map((rows ?? []).map((r) => [r.id as string, r.status as string]));
   if (existing.size === 0) return;
 
+  const severityById = new Map(issues.map((issue) => [issue.id, issue.severity]));
   const issuesByTest = new Map<string, string[]>();
   for (const issue of issues) {
     for (const tid of issue.related_test_ids) {
@@ -687,21 +762,29 @@ async function reconcileScreenLinks(
       }
     }
   }
+  // Direct attribution: an issue that named the screen it happened on (explorer
+  // findings) links to that screen even when no journey stepped through it.
+  for (const issue of issues) {
+    if (issue.related_screen_id) add(screenIssues, issue.related_screen_id, issue.id);
+  }
 
-  for (const id of existing) {
-    const patch = {
+  for (const [id, currentStatus] of existing) {
+    const linkedIssues = [...(screenIssues.get(id) ?? [])];
+    // Redden only for a genuine failure (critical/high). Never downgrade a
+    // screen that publish already flagged 'warning' (expected-but-missing) or
+    // that has no serious issue — leave its streamed status untouched.
+    const hasSeriousIssue = linkedIssues.some((iid) => {
+      const sev = severityById.get(iid);
+      return sev === 'critical' || sev === 'high';
+    });
+    const patch: Record<string, unknown> = {
       test_case_ids: [...(screenTests.get(id) ?? [])],
-      issue_ids: [...(screenIssues.get(id) ?? [])],
+      issue_ids: linkedIssues,
     };
+    if (hasSeriousIssue && currentStatus !== 'warning') patch.status = 'broken';
     throwOnError(
       'link screen',
-      (
-        await supabase
-          .from('screens')
-          .update(patch)
-          .eq('analysis_id', analysisId)
-          .eq('id', id)
-      ).error,
+      (await supabase.from('screens').update(patch).eq('analysis_id', analysisId).eq('id', id)).error,
     );
   }
 }
@@ -716,11 +799,18 @@ export async function publishRun(
   artifact: RunArtifact,
   evidenceDir: string,
   analysisId: string = resolveAnalysisId(),
+  mode: PublishMode = 'replace',
 ): Promise<PublishResult> {
   const supabase: SupabaseClient | null = getSupabase();
   if (!supabase) return { skipped: true, tests: 0, issues: 0, investigations: 0 };
 
-  const urls = await uploadEvidence(supabase, artifact.runId, evidenceDir);
+  // 'replace' (full run) prunes the analysis down to this run's rows; 'merge'
+  // (single-test re-run) only upserts the affected rows, leaving every other
+  // test/journey/issue/insight in the project — and every other test's evidence
+  // in the bucket — intact.
+  const prune = mode === 'replace';
+
+  const urls = await uploadEvidence(supabase, artifact.runId, evidenceDir, analysisId, prune);
 
   const investigations = buildInvestigations(artifact, urls, analysisId);
   const investigatedIds = new Set(investigations.map((row) => row.test_id));
@@ -728,15 +818,13 @@ export async function publishRun(
   const issues = buildIssues(artifact, analysisId);
   const journeys = buildJourneys(artifact, analysisId);
 
-  // Upsert fresh rows, then prune the previous Run's stale ones. Order matters:
-  // new data lands before old data leaves, so a failure never empties the run.
   const asRows = <T>(rows: T[]): Array<Record<string, unknown>> =>
     rows as unknown as Array<Record<string, unknown>>;
-  await replaceRows(supabase, 'journeys', 'id', asRows(journeys), analysisId);
-  await replaceRows(supabase, 'tests', 'id', asRows(tests), analysisId);
-  await replaceRows(supabase, 'issues', 'id', asRows(issues), analysisId);
-  await replaceRows(supabase, 'investigations', 'test_id', asRows(investigations), analysisId);
-  await replaceRows(supabase, 'insights', 'id', asRows(buildInsights(artifact, analysisId)), analysisId);
+  await upsertRows(supabase, 'journeys', 'id', asRows(journeys), analysisId, prune);
+  await upsertRows(supabase, 'tests', 'id', asRows(tests), analysisId, prune);
+  await upsertRows(supabase, 'issues', 'id', asRows(issues), analysisId, prune);
+  await upsertRows(supabase, 'investigations', 'test_id', asRows(investigations), analysisId, prune);
+  await upsertRows(supabase, 'insights', 'id', asRows(buildInsights(artifact, analysisId)), analysisId, prune);
 
   // Turn expected-but-missing pages into amber warning nodes (0 elements)
   // before counting, so SPA soft-404s the explorer caught by content show up
@@ -744,19 +832,30 @@ export async function publishRun(
   await reconcileExpectedMissingScreens(supabase, artifact, analysisId);
 
   // Back-fill each streamed screen's test_case_ids/issue_ids from the journey
-  // graph so the map's "Generated tests"/"Related issues" counts aren't always 0.
-  await reconcileScreenLinks(supabase, journeys, issues, analysisId);
-
-  // Screens are streamed live by the reporter; count them for the summary
-  // (publish otherwise only reconciles missing-page warnings above).
-  const { count: screenCount, error: screenCountError } = await supabase
-    .from('screens')
-    .select('id', { count: 'exact', head: true })
-    .eq('analysis_id', analysisId);
-  throwOnError('count screens', screenCountError);
+  // graph so the map's "Generated tests"/"Related issues" counts aren't always
+  // 0. Only in 'replace' mode: this rewrites EVERY screen's links from the run's
+  // journeys, so a single-test run (one journey) would blank every other
+  // screen's links — a merge run leaves the full run's links untouched.
+  if (mode === 'replace') {
+    await reconcileScreenLinks(supabase, journeys, issues, analysisId);
+  }
 
   // Commit marker: write the summary last so the UI flips to this Run atomically.
-  const summary = buildSummary(artifact, tests, journeys, screenCount ?? 0);
+  // A full run derives it from its own artifact; a merge run recomputes it from
+  // the whole project in the DB so a re-run only nudges the changed test's tally.
+  let summary: Record<string, unknown>;
+  if (mode === 'merge') {
+    summary = await summaryFromDb(supabase, artifact, analysisId);
+  } else {
+    // Screens are streamed live by the reporter; count them for the summary
+    // (publish otherwise only reconciles missing-page warnings above).
+    const { count: screenCount, error: screenCountError } = await supabase
+      .from('screens')
+      .select('id', { count: 'exact', head: true })
+      .eq('analysis_id', analysisId);
+    throwOnError('count screens', screenCountError);
+    summary = buildSummary(artifact, tests, journeys, screenCount ?? 0);
+  }
   const { data: existing, error: selectError } = await supabase
     .from('analyses')
     .select('id')

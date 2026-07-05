@@ -62,7 +62,7 @@ export async function exploreDeep(opts: DeepExploreOptions): Promise<DeepExplora
     opts.shape.explorers * LEADS_PER_EXPLORER,
   );
   const waveOne = await runWave(1, assignments, carriedLeads, workDir, opts);
-  const findings = await collectReportedFindings(waveOne.reports, (i) => `explore-w1x${i}`, opts.evidenceDir);
+  const findings = await collectReportedFindings(waveOne.reports, (i) => `explore-w1x${i}`, opts.evidenceDir, opts.target);
 
   let reports = waveOne.reports;
   let unconsumed = [...ledgerRest];
@@ -83,7 +83,7 @@ export async function exploreDeep(opts: DeepExploreOptions): Promise<DeepExplora
       const waveTwo = await runWave(2, assignMissions(opts.brief?.missions, chasers), seeds, workDir, opts);
       reports = [...reports, ...waveTwo.reports];
       findings.push(
-        ...(await collectReportedFindings(waveTwo.reports, (i) => `explore-w2x${i}`, opts.evidenceDir)),
+        ...(await collectReportedFindings(waveTwo.reports, (i) => `explore-w2x${i}`, opts.evidenceDir, opts.target)),
       );
       unconsumed = [...unconsumed, ...waveTwo.leads];
     } else {
@@ -95,9 +95,12 @@ export async function exploreDeep(opts: DeepExploreOptions): Promise<DeepExplora
 
   await saveLeads(opts.repoRoot, dedupeLeads(unconsumed));
 
-  await emitReportedScreens(reports, opts);
   const proposed = collectProposedFlows(reports, opts.knownFlows);
   const flows = await admitProposedFlows(proposed, opts, workDir);
+  // Enrich after admit so newly discovered screens exist first (enrichOnly never
+  // creates a row); running it before admit left fresh screens at "0 elements".
+  // See explore() in explorer.ts for the full rationale.
+  await emitReportedScreens(reports, opts);
   const candidates = dedupeCandidates(reports.flatMap((r) => r?.candidates ?? []));
 
   return { discovered: flows.length, findings, flows, candidates };
@@ -207,6 +210,7 @@ ${hardRules(target.origin)}
 2. FINDINGS —
    - kind "hard-failure": objective breakage — a link/button you CLICKED that leads to a 404/error page (a broken link), HTTP 5xx, console/page errors, crashes, blank pages. Include the exact control text, URL, and HTTP status.
    - kind "advisory": (a) an expected-but-missing page — a standard page you expected that had NO control linking to it, so you tried its URL directly and got a 404 — titled like "Expected page \\"/signup\\" but it was not present (HTTP 404)"; and (b) your judgment on UX, accessibility, or speed. Be sparing; only what a developer would thank you for.
+   - For EVERY finding, set "screen" to the path of the page you were ON when you observed it (e.g. "/dashboard") — that is the node it gets flagged on in the map. Omit only if it truly has no page.
 3. ${screenCaptureRules()}
 4. CANDIDATES — suspected SEMANTIC bugs: the page renders and returns 200, but the behavior is wrong (wrong data, wrong order, lost state, a control that does nothing). Do NOT file these as findings — an independent Verifier will re-execute your repro in a fresh browser session, and only reproduced candidates reach the user. Each candidate needs:
    - "expectation": the behavior the app violated, and "source": where that expectation comes from — "docs" (the product's own docs), "brief" (the reconnaissance above), or "common-sense"
@@ -217,7 +221,7 @@ ${hardRules(target.origin)}
 Reply with ONLY one JSON object, no prose, no markdown fences:
 {
   "flows": [ { "id": "kebab-case-id", "title": "...", "script": "export default async function flow(page, target) { ... }" } ],
-  "findings": [ { "kind": "hard-failure", "title": "...", "detail": "exact evidence" } ],
+  "findings": [ { "kind": "hard-failure", "title": "...", "detail": "exact evidence", "screen": "/dashboard" } ],
   "screens": [ { "path": "/login", "elements": [ { "label": "Sign in", "kind": "button" } ], "navigation": [ { "label": "Sign up", "target": "/signup", "trigger": "click" } ] } ],
   "candidates": [ { "title": "...", "expectation": "...", "source": "docs|brief|common-sense", "repro": ["1. ...", "2. ..."], "url": "where it is observable" } ],
   "leads": [ { "hint": "...", "url": "..." } ]${cloud ? ',\n  "evidenceUrl": "https://.../evidence/....webm or null"' : ''}

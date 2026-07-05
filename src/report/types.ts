@@ -79,6 +79,12 @@ export interface Finding {
   kind: FindingKind;
   /** The Flow this Finding is attached to; Regressions always have one. */
   flowId?: string;
+  /**
+   * Normalized screen id (path) where the Finding was observed, when known.
+   * Explorer findings carry the page they happened on so publish can redden
+   * that node on the map; absent for findings with no locatable screen.
+   */
+  screenId?: string;
   title: string;
   detail: string;
   /** Path to WebM Evidence, relative to the Run artifact's evidence/ dir. */

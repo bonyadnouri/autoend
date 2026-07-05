@@ -26,31 +26,45 @@ async function ensureBucket(supabase: SupabaseClient): Promise<void> {
     // anon typically can't read storage.buckets — fall through and try create.
   }
   const { error } = await supabase.storage.createBucket(EVIDENCE_BUCKET, { public: true });
-  // "already exists" (migration/another run) or a permission error both mean
-  // "proceed": the bucket is presumed present and uploads will prove it.
-  if (error && !/already exists/i.test(error.message)) {
+  // "already exists" (migration/another run) and RLS denials (the anon key
+  // can't write storage.buckets — the normal case, since the bucket is created
+  // by lumen/supabase/migrations/002_evidence_bucket.sql) both mean "proceed":
+  // the bucket is presumed present and uploads will prove it. Only warn on a
+  // genuinely unexpected error so the common path stays quiet.
+  if (error && !/already exists|row-level security|violates row-level/i.test(error.message)) {
     console.warn(`could not ensure evidence bucket (continuing; assuming it exists): ${error.message}`);
   }
 }
 
 /**
- * Delete every object from Runs other than `keepRunId` so the bucket doesn't
- * grow unbounded (each Run re-uploads full video). Best-effort: a failure to
- * prune must never fail a publish. Objects are laid out under `<runId>/<file>`,
- * so top-level "folders" are Run ids.
+ * Delete evidence from THIS project's earlier runs so the bucket doesn't grow
+ * unbounded (each full Run re-uploads full video), while never touching another
+ * project's or the current run's objects. Evidence is laid out under
+ * `<runId>/<file>` — run ids aren't project-scoped in the path, so we ask the
+ * `runs` table which run ids belong to this analysis and prune only those
+ * (except `keepRunId`). Deleting every non-current folder wholesale used to
+ * wipe other projects' videos AND, on a single-test re-run, the full run's
+ * videos for every other test — leaving those `videoUrl`s pointing at deleted
+ * objects (a blank/white player). Best-effort: pruning must never fail publish.
  */
-async function pruneOldRuns(supabase: SupabaseClient, keepRunId: string): Promise<void> {
+async function pruneOldRuns(
+  supabase: SupabaseClient,
+  keepRunId: string,
+  analysisId: string,
+): Promise<void> {
   const bucket = supabase.storage.from(EVIDENCE_BUCKET);
   try {
-    const { data: roots, error } = await bucket.list('', { limit: 1000 });
-    if (error || !roots) return;
-    for (const entry of roots) {
-      // Directory entries come back with no id/metadata; files at the root
-      // (there shouldn't be any) have an id — skip those to be safe.
-      if (entry.name === keepRunId || entry.id) continue;
-      const { data: files } = await bucket.list(entry.name, { limit: 1000 });
+    const { data: runs, error } = await supabase
+      .from('runs')
+      .select('id')
+      .eq('analysis_id', analysisId)
+      .neq('id', keepRunId);
+    if (error || !runs) return;
+    for (const run of runs) {
+      const runId = run.id as string;
+      const { data: files } = await bucket.list(runId, { limit: 1000 });
       if (!files || files.length === 0) continue;
-      await bucket.remove(files.map((f) => `${entry.name}/${f.name}`));
+      await bucket.remove(files.map((f) => `${runId}/${f.name}`));
     }
   } catch (err) {
     console.warn(`could not prune old evidence: ${err instanceof Error ? err.message : String(err)}`);
@@ -61,13 +75,19 @@ async function pruneOldRuns(supabase: SupabaseClient, keepRunId: string): Promis
  * Upload every evidence file for a Run to Supabase Storage under
  * `<runId>/<file>` and return a map of {filename -> public URL} so the mapper
  * can point `replay.videoUrl` at the hosted WebM. Missing/unreadable files are
- * skipped; a total absence of evidence returns an empty map. Objects from
- * prior Runs are pruned so the bucket tracks only the latest Run.
+ * skipped; a total absence of evidence returns an empty map.
+ *
+ * `prune` controls cleanup of THIS project's earlier runs: a full run prunes
+ * them (the bucket tracks the project's latest run); a single-test re-run does
+ * NOT prune, so it can't delete the full run's videos for the other tests it
+ * didn't touch. Never touches other projects' evidence either way.
  */
 export async function uploadEvidence(
   supabase: SupabaseClient,
   runId: string,
   evidenceDir: string,
+  analysisId: string,
+  prune: boolean,
 ): Promise<Map<string, string>> {
   const urls = new Map<string, string>();
 
@@ -102,8 +122,9 @@ export async function uploadEvidence(
   }
 
   // Only prune once this Run's evidence is safely uploaded, so a failed upload
-  // never leaves the bucket empty of the run the report points at.
-  await pruneOldRuns(supabase, runId);
+  // never leaves the bucket empty of the run the report points at. Skipped for
+  // single-test re-runs (prune=false) so other tests' videos survive.
+  if (prune) await pruneOldRuns(supabase, runId, analysisId);
 
   return urls;
 }

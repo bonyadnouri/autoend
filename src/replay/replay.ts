@@ -41,6 +41,12 @@ const FLOW_TIMEOUT_MS = 60_000;
 const REPLAY_WORKERS = 4;
 const VIEWPORT = { width: 1280, height: 720 };
 const CAPTURE_CAP = 50; // per stream; drop beyond, note nothing — caps keep report.json bounded
+/**
+ * Extra time the recording keeps rolling after the script returns, so the WebM
+ * captures the final state (the last action's result) instead of cutting off
+ * the instant the flow ends. Applied to every Playwright-recorded flow.
+ */
+const VIDEO_TAIL_MS = 1_500;
 
 export interface FlowStreamContext {
   reporter?: RunReporter;
@@ -242,6 +248,11 @@ export async function runFlowScript(
     await screenshot('after', `${videoBase}-after.png`);
   }
 
+  // Let the recording roll a beat longer so the final state lands in the WebM
+  // rather than being clipped the moment the script returns. Plain sleep (not
+  // page.waitForTimeout) so a crashed/closed page can't turn this into an error.
+  await new Promise((resolve) => setTimeout(resolve, VIDEO_TAIL_MS));
+
   const video = page.video();
   await context.close(); // finalizes the recording
   let evidence: string | undefined;
@@ -316,7 +327,17 @@ export async function replayFlowMap(
       withPool(
         flows,
         REPLAY_WORKERS,
-        async (flow): Promise<{ snapshot: FlowSnapshot; finding?: Finding; missing: Finding[] }> => {
+        async (
+          flow,
+        ): Promise<{
+          snapshot: FlowSnapshot;
+          finding?: Finding;
+          missing: Finding[];
+          /** Screen ids this flow visited, in navigation order. */
+          visited: string[];
+          /** The screen a thrown script failed ON, if any (post-pool settlement). */
+          failedScreenId?: string;
+        }> => {
           const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
           // Capture the exact script we replay so the Report (and the DB) carry a
           // portable reproduction, not just a pointer into the local Flow Map.
@@ -337,17 +358,14 @@ export async function replayFlowMap(
           // Redden the last screen only when the script actually threw ON a real
           // page (outcome.ok === false). A flow that failed because it ENDED on a
           // 404 (outcome.ok === true, badEndState set) already had that phantom
-          // screen dropped from the graph — every id left here is a page that
-          // loaded fine, so none of them should be marked failed.
+          // screen dropped from the graph and surfaced as a warning node — there's
+          // no real screen to redden. Screen/edge statuses are SETTLED AFTER the
+          // whole pool finishes (see below), never per flow: flows replay in
+          // parallel and the reporter serializes writes, so a passing flow settling
+          // last would otherwise overwrite a failing flow's red on a shared screen.
           const scriptThrew = !outcome.ok;
-          const settleScreens = async (status: 'passed' | 'failed') => {
-            const ids = outcome.visitedScreenIds;
-            for (let i = 0; i < ids.length; i++) {
-              const screenStatus =
-                status === 'failed' && scriptThrew && i === ids.length - 1 ? 'failed' : 'passed';
-              await reporter.screenSeen({ id: ids[i]!, path: ids[i]!, status: screenStatus });
-            }
-          };
+          const ids = outcome.visitedScreenIds;
+          const failedScreenId = failed && scriptThrew && ids.length > 0 ? ids[ids.length - 1] : undefined;
           const snapshot: FlowSnapshot = {
             id: flow.id,
             title: flow.title,
@@ -362,7 +380,6 @@ export async function replayFlowMap(
             script,
           };
           if (failed) {
-            await settleScreens('failed');
             await reporter.testStatus({
               testId: flow.id,
               title: flow.title,
@@ -372,6 +389,7 @@ export async function replayFlowMap(
               network: outcome.network,
               timeline: outcome.timeline,
               durationMs: outcome.durationMs,
+              script,
             });
             await reporter.event({ type: 'flow', flowId: flow.id, title: flow.title, state: 'failed' });
             // TODO(ADR-0001): attempt a Heal (re-achieve the Flow's goal via an agent)
@@ -390,24 +408,54 @@ export async function replayFlowMap(
               timeline: outcome.timeline,
               screenshots: outcome.screenshots,
             };
-            return { snapshot, finding, missing };
+            return { snapshot, finding, missing, visited: ids, failedScreenId };
           }
-          await settleScreens('passed');
           await reporter.testStatus({
             testId: flow.id,
             title: flow.title,
             status: 'passed',
             durationMs: outcome.durationMs,
             timeline: outcome.timeline,
+            script,
           });
           await reporter.event({ type: 'flow', flowId: flow.id, title: flow.title, state: 'passed' });
           const lastPassedAt = new Date().toISOString();
           await saveFlowMeta(repoRoot, { ...flow, lastPassedAt });
           snapshot.lastPassedAt = lastPassedAt;
-          return { snapshot, missing };
+          return { snapshot, missing, visited: ids, failedScreenId };
         },
       ),
     );
+    // Settle final screen + edge statuses ONCE, after every flow has replayed.
+    // A screen is failed if ANY flow failed on it, else passed; the inbound edge
+    // to a failure screen is marked broken. Doing this post-pool — not per flow —
+    // stops a passing flow that happened to finish later from overwriting a
+    // failing flow's red on a shared screen/edge (the reporter serializes writes,
+    // so otherwise last-write-by-completion-order silently decided the color).
+    const screenStatus = new Map<string, 'passed' | 'failed'>();
+    const brokenEdges = new Map<string, { source: string; target: string; label: string }>();
+    for (const r of results) {
+      for (const sid of r.visited) if (!screenStatus.has(sid)) screenStatus.set(sid, 'passed');
+    }
+    for (const r of results) {
+      if (!r.failedScreenId) continue;
+      screenStatus.set(r.failedScreenId, 'failed');
+      const idx = r.visited.indexOf(r.failedScreenId);
+      const prev = idx > 0 ? r.visited[idx - 1] : undefined;
+      if (prev) {
+        brokenEdges.set(edgeId(prev, r.failedScreenId), {
+          source: prev,
+          target: r.failedScreenId,
+          label: r.snapshot.title,
+        });
+      }
+    }
+    for (const [sid, status] of screenStatus) {
+      await reporter.screenSeen({ id: sid, path: sid, title: screenTitle(sid), status });
+    }
+    for (const [id, e] of brokenEdges) {
+      await reporter.edgeSeen({ id, source: e.source, target: e.target, label: e.label, status: 'broken' });
+    }
     await reporter.event({ type: 'phase', phase: 'replay', state: 'finished' });
     // Dedupe missing-page warnings by id — several flows may hit the same 404.
     const missingById = new Map<string, Finding>();

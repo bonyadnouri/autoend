@@ -70,6 +70,15 @@ export interface TestStatusFact {
   network?: NetworkEntry[];
   timeline?: StepResult[];
   durationMs?: number;
+  /**
+   * The flow's executable Playwright script. Streamed WITH the status so the
+   * test row is replayable the moment it exists: the daemon hydrates its flow
+   * map from `tests.script`, and a full run wipes the previous rows up front —
+   * if the script only arrived at publish (as it used to), any run that died
+   * before publishing left the whole project's flow map script-less, and every
+   * later run silently replayed nothing.
+   */
+  script?: string;
 }
 
 export interface RunStartedInfo {
@@ -93,4 +102,6 @@ export interface RunReporter {
   screenDropped(id: string): Promise<void>;
   edgeSeen(edge: EdgeFact): Promise<void>;
   testStatus(update: TestStatusFact): Promise<void>;
+  /** Wait until all queued Supabase writes have finished. Call before publish. */
+  flush(): Promise<void>;
 }
