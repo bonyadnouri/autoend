@@ -33,8 +33,6 @@ function appName(target: string): string {
 export class SupabaseReporter implements RunReporter {
   private seq = 0;
   private chain: Promise<void> = Promise.resolve();
-  /** Insertion counter used to lay freshly discovered screens out in a grid. */
-  private screenCount = 0;
 
   constructor(
     private readonly supabase: SupabaseClient,
@@ -83,7 +81,6 @@ export class SupabaseReporter implements RunReporter {
    * (its id is referenced everywhere and re-created lazily by publish anyway).
    */
   private async clearSeededData(target: string): Promise<void> {
-    this.screenCount = 0;
     for (const table of SEEDED_TABLES) {
       const { error } = await this.supabase.from(table).delete().eq('analysis_id', this.analysisId);
       if (error) throw error;
@@ -154,18 +151,16 @@ export class SupabaseReporter implements RunReporter {
       if (updateError) throw updateError;
       if (updated && updated.length > 0) return;
 
-      // No auto-layout in the UI: lay newly discovered screens out in a grid so
-      // a fresh run's graph is readable instead of a pile stacked at the origin.
-      const col = this.screenCount % 4;
-      const row = Math.floor(this.screenCount / 4);
-      this.screenCount += 1;
+      // Position is left at the origin as a sentinel: the UI derives graph
+      // layout from the screen/edge structure (lib/layout.ts), so the backend
+      // never bakes in absolute pixel coordinates.
       const { error: insertError } = await this.supabase.from('screens').insert({
         analysis_id: this.analysisId,
         id: screen.id,
         name,
         type: screenType(screen.path),
         description: `Discovered at ${screen.path}`,
-        position: { x: 80 + col * 320, y: 80 + row * 200 },
+        position: { x: 0, y: 0 },
         status: screen.status,
         is_entry_point: screen.path === '/',
         accent: SCREEN_ACCENT,
@@ -213,6 +208,7 @@ export class SupabaseReporter implements RunReporter {
             action: step.label,
             expected: step.status === 'passed' ? 'Step succeeds' : 'Step fails',
           })),
+          repro_steps: (update.timeline ?? []).map((step, index) => `${index + 1}. ${step.label}`),
           expected_result: 'Flow completes without regressions',
           actual_result: update.detail ?? '',
           status: testDbStatus(update.status),

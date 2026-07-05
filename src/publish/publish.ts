@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Finding, FlowSnapshot, RunArtifact } from '../report/types.js';
+import type { Finding, FlowSnapshot, RunArtifact, StepResult } from '../report/types.js';
 import { uploadEvidence } from './evidence.js';
 import { ANALYSIS_ID, getSupabase } from './supabase-client.js';
 
@@ -26,6 +26,10 @@ interface TestRow {
   duration_ms: number;
   related_issue_ids: string[];
   has_investigation: boolean;
+  /** Human-readable numbered reproduction recipe. */
+  repro_steps: string[];
+  /** Exact executable Playwright flow — the concrete reproduction. */
+  script: string | null;
 }
 
 interface IssueRow {
@@ -39,6 +43,25 @@ interface IssueRow {
   suggested_fix: string;
   related_test_ids: string[];
   status: 'open';
+}
+
+interface InsightRow {
+  id: string;
+  analysis_id: string;
+  title: string;
+  category:
+    | 'missing-functionality'
+    | 'broken-flow'
+    | 'ux-inconsistency'
+    | 'unreachable-screen'
+    | 'unexpected-navigation'
+    | 'suggested-improvement';
+  description: string;
+  detail: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  related_screen_id: string | null;
+  related_journey_id: string | null;
+  issue_id: string | null;
 }
 
 interface InvestigationRow {
@@ -68,6 +91,11 @@ function subjectId(finding: Finding): string {
 /** A non-advisory Finding without a Flow reads as a failed test in the UI. */
 function findingTestStatus(kind: Finding['kind']): TestRow['status'] {
   return kind === 'advisory' ? 'not-executed' : 'fail';
+}
+
+/** Turn a run timeline into a numbered, human-readable reproduction recipe. */
+function reproSteps(timeline: StepResult[] | undefined): string[] {
+  return (timeline ?? []).map((step, index) => `${index + 1}. ${step.label}`);
 }
 
 function severity(kind: Finding['kind']): IssueRow['severity'] {
@@ -140,6 +168,8 @@ function buildTests(artifact: RunArtifact, investigatedIds: Set<string>): TestRo
       duration_ms: flow.durationMs ?? 0,
       related_issue_ids: related.map((f) => f.id),
       has_investigation: investigatedIds.has(flow.id),
+      repro_steps: reproSteps(flow.timeline),
+      script: flow.script ?? null,
     };
   });
 
@@ -165,9 +195,39 @@ function buildTests(artifact: RunArtifact, investigatedIds: Set<string>): TestRo
       duration_ms: 0,
       related_issue_ids: [finding.id],
       has_investigation: investigatedIds.has(sid),
+      repro_steps: reproSteps(finding.timeline),
+      script: null,
     });
   }
   return tests;
+}
+
+/** Map a Finding kind to the Lumen Insight taxonomy (types/index.ts). */
+function insightCategory(kind: Finding['kind']): InsightRow['category'] {
+  if (kind === 'hard-failure' || kind === 'regression') return 'broken-flow';
+  if (kind === 'defect') return 'ux-inconsistency';
+  return 'suggested-improvement';
+}
+
+/**
+ * Insights are the analysis-level readout the UI's Insights page renders. Each
+ * Finding produces one, linked back to its Issue so a reader can pivot from the
+ * high-level observation to the concrete issue and its investigation. Advisories
+ * (which never became Issues) still surface here as improvement suggestions.
+ */
+function buildInsights(artifact: RunArtifact): InsightRow[] {
+  return artifact.findings.map((finding) => ({
+    id: `insight-${finding.id}`,
+    analysis_id: ANALYSIS_ID,
+    title: finding.title,
+    category: insightCategory(finding.kind),
+    description: finding.detail || finding.title,
+    detail: finding.diagnosis?.rootCause || finding.detail || finding.title,
+    severity: severity(finding.kind),
+    related_screen_id: null,
+    related_journey_id: null,
+    issue_id: finding.id,
+  }));
 }
 
 function buildIssues(artifact: RunArtifact): IssueRow[] {
@@ -409,6 +469,7 @@ export async function publishRun(
   await replaceRows(supabase, 'tests', 'id', asRows(tests));
   await replaceRows(supabase, 'issues', 'id', asRows(issues));
   await replaceRows(supabase, 'investigations', 'test_id', asRows(investigations));
+  await replaceRows(supabase, 'insights', 'id', asRows(buildInsights(artifact)));
 
   // Commit marker: write the summary last so the UI flips to this Run atomically.
   const summary = buildSummary(artifact);

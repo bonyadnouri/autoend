@@ -257,6 +257,7 @@ export async function admitProposedFlows(
             timeline: outcome.timeline,
             evidence: outcome.evidence,
             durationMs: outcome.durationMs,
+            script: flow.script,
           });
         } else {
           console.warn(`proposed flow "${flow.id}" failed verification and was discarded: ${outcome.error}`);

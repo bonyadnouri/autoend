@@ -108,6 +108,8 @@ export interface FlowSnapshot {
   timeline?: StepResult[];
   evidence?: string;
   durationMs?: number;
+  /** The executable Playwright flow script — the concrete, portable reproduction. */
+  script?: string;
 }
 
 export interface Environment {

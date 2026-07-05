@@ -1,4 +1,4 @@
-import { rename } from 'node:fs/promises';
+import { readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -217,6 +217,9 @@ export async function replayFlowMap(
         REPLAY_WORKERS,
         async (flow): Promise<{ snapshot: FlowSnapshot; finding?: Finding }> => {
           const scriptPath = join(flowMapDir(repoRoot), flow.id, 'flow.mts');
+          // Capture the exact script we replay so the Report (and the DB) carry a
+          // portable reproduction, not just a pointer into the local Flow Map.
+          const script = await readFile(scriptPath, 'utf8').catch(() => undefined);
           await reporter.event({ type: 'flow', flowId: flow.id, title: flow.title, state: 'started' });
           await reporter.testStatus({ testId: flow.id, title: flow.title, status: 'running' });
           const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, flow.id, {
@@ -240,6 +243,7 @@ export async function replayFlowMap(
             timeline: outcome.timeline,
             evidence: outcome.evidence,
             durationMs: outcome.durationMs,
+            script,
           };
           if (!outcome.ok) {
             await settleScreens('failed');
