@@ -48,9 +48,10 @@ interface InvestigationRow {
 }
 
 function testStatus(status: FlowSnapshot['status']): TestRow['status'] {
-  if (status === 'passed') return 'pass';
   if (status === 'failed') return 'fail';
-  return 'not-executed';
+  // 'passed' and 'discovered' both mean the flow was verified by running it
+  // (a discovered flow only enters the map after admitProposedFlows passes it).
+  return 'pass';
 }
 
 /**
@@ -108,6 +109,8 @@ function appName(target: string): string {
 /** Resolve an evidence filename (possibly a relative path) to its uploaded public URL. */
 function evidenceUrl(urls: Map<string, string>, file: string | undefined): string | null {
   if (!file) return null;
+  // Cloud explorers already uploaded their recording and reported a full URL.
+  if (/^https?:\/\//.test(file)) return file;
   return urls.get(file) ?? urls.get(basename(file)) ?? null;
 }
 
@@ -332,9 +335,9 @@ function buildInvestigations(
 
 /** Partial summary — only the columns a Run knows; mock columns are preserved. */
 function buildSummary(artifact: RunArtifact) {
-  const passed = artifact.flows.filter((f) => f.status === 'passed').length;
+  // 'discovered' flows were verified by running them, so they count as passed.
+  const passed = artifact.flows.filter((f) => f.status === 'passed' || f.status === 'discovered').length;
   const failed = artifact.flows.filter((f) => f.status === 'failed').length;
-  const notExecuted = artifact.flows.filter((f) => f.status === 'discovered').length;
   const critical = artifact.findings.filter((f) => f.kind === 'hard-failure').length;
   return {
     app_name: appName(artifact.target),
@@ -344,7 +347,7 @@ function buildSummary(artifact: RunArtifact) {
     tests_executed: passed + failed,
     tests_passed: passed,
     tests_failed: failed,
-    tests_not_executed: notExecuted,
+    tests_not_executed: 0,
     critical_issues: critical,
   };
 }

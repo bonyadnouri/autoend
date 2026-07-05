@@ -61,6 +61,8 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
         kind: 'full',
         reporter,
         model: process.env.AUTOEND_MODEL ?? config?.model,
+        runtime: config?.runtime,
+        cloudRepo: config?.cloudRepo,
       });
       await publishRun(artifact, join(artifactDir, 'evidence'));
     }

@@ -4,9 +4,9 @@ import type { PipelineShape } from '../run/effort.js';
 import type { ProductBrief } from '../recon/brief.js';
 import {
   admitProposedFlows,
-  browserProtocol,
   collectProposedFlows,
   collectReportedFindings,
+  explorerBrowserProtocol,
   flowScriptRules,
   hardRules,
   runExplorer,
@@ -125,6 +125,8 @@ async function runWave(
         budgetSeconds: opts.shape.seconds,
         model: opts.model,
         apiKey: opts.apiKey,
+        runtime: opts.runtime,
+        cloudRepo: opts.cloudRepo,
       });
     }),
   );
@@ -157,8 +159,9 @@ function personaPrompt(args: {
   opts: DeepExploreOptions;
 }): string {
   const { wave, index, session, assignment, seeds, opts } = args;
-  const { target, evidenceDir, knownFlows, brief, shape } = opts;
-  const videoPath = join(evidenceDir, `explore-w${wave}x${index}.webm`);
+  const { target, knownFlows, brief, shape } = opts;
+  const videoBase = `explore-w${wave}x${index}`;
+  const cloud = opts.runtime === 'cloud' && Boolean(opts.evidenceUpload);
   const { mission } = assignment;
 
   const productContext = brief
@@ -192,7 +195,7 @@ ${productContext}
 
 ${leadBlock}
 
-${browserProtocol(session, target, videoPath)}
+${explorerBrowserProtocol(opts, session, videoBase)}
 
 ${hardRules(target.origin)}
 
@@ -212,7 +215,7 @@ Reply with ONLY one JSON object, no prose, no markdown fences:
   "flows": [ { "id": "kebab-case-id", "title": "...", "script": "export default async function flow(page, target) { ... }" } ],
   "findings": [ { "kind": "hard-failure", "title": "...", "detail": "exact evidence" } ],
   "candidates": [ { "title": "...", "expectation": "...", "source": "docs|brief|common-sense", "repro": ["1. ...", "2. ..."], "url": "where it is observable" } ],
-  "leads": [ { "hint": "...", "url": "..." } ]
+  "leads": [ { "hint": "...", "url": "..." } ]${cloud ? ',\n  "evidenceUrl": "https://.../evidence/....webm or null"' : ''}
 }
 Empty arrays are fine. An honest empty report beats an invented one.`;
 }

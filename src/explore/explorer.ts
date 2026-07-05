@@ -1,7 +1,7 @@
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { extractJsonObject, runAgentJob } from '../agents/harness.js';
+import { extractJsonObject, runAgentJob, type AgentRuntime } from '../agents/harness.js';
 import { addFlow, type FlowMeta } from '../map/flow-map.js';
 import { runFlowScript } from '../replay/replay.js';
 import type { RunReporter } from '../stream/index.js';
@@ -9,6 +9,19 @@ import type { ExplorationBudget } from '../run/effort.js';
 import type { Finding, FlowSnapshot } from '../report/types.js';
 import { withoutSensitiveEnv } from '../run/sensitive-env.js';
 import { closeSession } from './hands.js';
+
+/**
+ * Everything a cloud explorer needs to push its recording to Supabase Storage
+ * from inside its Linux VM (the WebM never touches the host, so the agent must
+ * upload it and hand back the public URL).
+ */
+export interface EvidenceUpload {
+  supabaseUrl: string;
+  /** anon (or service-role) key — the evidence bucket is public with open RLS. */
+  key: string;
+  bucket: string;
+  runId: string;
+}
 
 export interface ExploreOptions {
   repoRoot: string;
@@ -22,6 +35,12 @@ export interface ExploreOptions {
   model: string;
   apiKey: string;
   reporter?: RunReporter;
+  /** Where explorers run: 'local' (default) or 'cloud' (Cursor Linux VM). */
+  runtime?: AgentRuntime;
+  /** Repo a cloud explorer clones; ignored for local runtime. */
+  cloudRepo?: string;
+  /** Cloud runtime only: lets remote explorers upload their recording. */
+  evidenceUpload?: EvidenceUpload;
 }
 
 export interface ExplorationResult {
@@ -60,6 +79,8 @@ export interface ExplorerReport {
   /** Deep path only (ADR-0007/0008); absent on smoke reports. */
   candidates?: CandidateDefect[];
   leads?: Array<{ hint: string; url?: string }>;
+  /** Cloud runtime: public URL of the recording the agent uploaded itself. */
+  evidenceUrl?: string;
 }
 
 /** Each smoke explorer gets a distinct lens so the fleet doesn't converge on one path. */
@@ -77,6 +98,14 @@ const LENSES = [
  * they report, losing all their work.
  */
 export const GRACE_MS = 60_000;
+
+/**
+ * Extra wall-clock a cloud explorer gets on top of its Effort budget: a fresh
+ * Cursor VM must `npm install -g agent-browser` and download Chromium before it
+ * can touch the Target, and that one-time setup would otherwise eat the whole
+ * exploration budget. Local runtime already has the tools, so it gets nothing.
+ */
+export const CLOUD_SETUP_MS = 150_000;
 
 /**
  * The smoke path (ADR-0007): low/mid Effort keeps the fast single-pass
@@ -99,6 +128,8 @@ export async function explore(opts: ExploreOptions): Promise<ExplorationResult> 
         budgetSeconds: opts.budget.seconds,
         model: opts.model,
         apiKey: opts.apiKey,
+        runtime: opts.runtime,
+        cloudRepo: opts.cloudRepo,
       }),
     ),
   );
@@ -117,10 +148,13 @@ export interface ExplorerJob {
   budgetSeconds: number;
   model: string;
   apiKey: string;
+  runtime?: AgentRuntime;
+  cloudRepo?: string;
 }
 
 /** Run one explorer to completion and parse its report. Shared by smoke and deep waves. */
 export async function runExplorer(job: ExplorerJob): Promise<ExplorerReport | undefined> {
+  const cloud = job.runtime === 'cloud';
   try {
     const text = await runAgentJob({
       name: job.name,
@@ -128,14 +162,19 @@ export async function runExplorer(job: ExplorerJob): Promise<ExplorerReport | un
       cwd: job.workDir,
       model: job.model,
       apiKey: job.apiKey,
-      timeoutMs: job.budgetSeconds * 1000 + GRACE_MS,
+      // Cloud VMs pay a one-time tool-install tax before exploring (CLOUD_SETUP_MS).
+      timeoutMs: job.budgetSeconds * 1000 + GRACE_MS + (cloud ? CLOUD_SETUP_MS : 0),
+      runtime: job.runtime,
+      cloudRepo: job.cloudRepo,
     });
     if (text === undefined) return undefined;
     const report = parseExplorerReport(text);
     if (!report) console.warn(`${job.name} returned an unparseable report`);
     return report;
   } finally {
-    await closeSession(job.session);
+    // A cloud explorer's browser lives and dies inside its VM — there is no
+    // local agent-browser daemon to close (calling it would fail on the host).
+    if (!cloud) await closeSession(job.session);
   }
 }
 
@@ -151,18 +190,26 @@ export async function collectReportedFindings(
   const findings: Finding[] = [];
   for (const [i, report] of reports.entries()) {
     if (!report) continue;
-    const evidence = `${videoBase(i)}.webm`;
-    const recorded = await access(join(evidenceDir, evidence)).then(
-      () => true,
-      () => false,
-    );
+    // Cloud explorers upload their own recording and report its public URL;
+    // local explorers drop a WebM in evidenceDir that publish uploads later.
+    let evidence: string | undefined;
+    if (report.evidenceUrl) {
+      evidence = report.evidenceUrl;
+    } else {
+      const file = `${videoBase(i)}.webm`;
+      const recorded = await access(join(evidenceDir, file)).then(
+        () => true,
+        () => false,
+      );
+      evidence = recorded ? file : undefined;
+    }
     for (const [n, f] of report.findings.entries()) {
       findings.push({
         id: `${videoBase(i)}-${n}`,
         kind: f.kind,
         title: f.title,
         detail: f.detail,
-        evidence: recorded ? evidence : undefined,
+        evidence,
       });
     }
   }
@@ -241,6 +288,50 @@ Protocol — last shell call (NEVER skip, even when out of time):
   agent-browser --session ${session} batch "close"`;
 }
 
+/**
+ * Cloud-runtime browser protocol: the explorer runs in a fresh Cursor Linux
+ * VM, so it must install agent-browser + Chromium itself, record its whole run
+ * (recording works reliably on Linux, unlike the host), then upload the WebM to
+ * Supabase Storage and hand back the public URL as `evidenceUrl`.
+ */
+export function cloudBrowserProtocol(session: string, target: URL, upload: EvidenceUpload, videoBase: string): string {
+  const remoteVideo = `/tmp/${videoBase}.webm`;
+  const objectPath = `${upload.runId}/${videoBase}.webm`;
+  const publicUrl = `${upload.supabaseUrl}/storage/v1/object/public/${upload.bucket}/${objectPath}`;
+  return `## Your browser (cloud Linux VM)
+You are in a fresh Cursor cloud VM. Do this ONE-TIME SETUP first, in order:
+  npm install -g agent-browser
+  agent-browser install            # downloads Chromium; may take ~60s
+If a step reports the tool/browser is already present, move on.
+
+Drive the browser with the agent-browser CLI via shell. EVERY command MUST include \`--session ${session}\`.
+SPEED MATTERS: every shell call costs a turn. BATCH commands whenever possible.
+
+Protocol — first browser call (start recording so your run is captured):
+  agent-browser --session ${session} batch "record start ${remoteVideo}" "open ${target.href}" "snapshot -i -c"
+Work loop (batch an action with the checks that follow it):
+  agent-browser --session ${session} batch "click @e12" "get url" "snapshot -i -c" "console" "errors"
+Protocol — last browser call (NEVER skip, even when out of time):
+  agent-browser --session ${session} batch "record stop" "close"
+
+## Upload your recording — MANDATORY (run after "record stop")
+  curl -sS -X POST "${upload.supabaseUrl}/storage/v1/object/${upload.bucket}/${objectPath}" \\
+    -H "Authorization: Bearer ${upload.key}" -H "apikey: ${upload.key}" \\
+    -H "Content-Type: video/webm" -H "x-upsert: true" \\
+    --data-binary "@${remoteVideo}"
+On success the recording is served at this exact URL:
+  ${publicUrl}
+Put that URL in your final JSON as "evidenceUrl" (or null if the upload failed).`;
+}
+
+/** Pick the browser protocol for the runtime: cloud VM vs local host. */
+export function explorerBrowserProtocol(opts: ExploreOptions, session: string, videoBase: string): string {
+  if (opts.runtime === 'cloud' && opts.evidenceUpload) {
+    return cloudBrowserProtocol(session, opts.target, opts.evidenceUpload, videoBase);
+  }
+  return browserProtocol(session, opts.target, join(opts.evidenceDir, `${videoBase}.webm`));
+}
+
 export function hardRules(origin: string): string {
   return `## Hard rules
 - NEVER navigate off the origin ${origin} — if a click leaves it, go back immediately.
@@ -264,15 +355,18 @@ ${known}
 }
 
 function smokePrompt(index: number, session: string, opts: ExploreOptions): string {
-  const { target, budget, evidenceDir, knownFlows } = opts;
-  const videoPath = join(evidenceDir, `explore-${index}.webm`);
+  const { target, budget, knownFlows } = opts;
+  const cloud = opts.runtime === 'cloud' && Boolean(opts.evidenceUpload);
+  const evidenceField = cloud
+    ? ',\n  "evidenceUrl": "https://.../evidence/....webm or null"'
+    : '';
 
   return `You are autoend explorer #${index}, part of a fleet testing a web app end-to-end. You have ${budget.seconds} seconds of exploration; ${Math.round(GRACE_MS / 1000)}s after that deadline you are hard-killed and any unreported work is LOST — so report early rather than perfectly.
 
 TARGET: ${target.href}
 Your lens: ${LENSES[index % LENSES.length]}
 
-${browserProtocol(session, target, videoPath)}
+${explorerBrowserProtocol(opts, session, `explore-${index}`)}
 
 ${hardRules(target.origin)}
 
@@ -290,7 +384,7 @@ Reply with ONLY one JSON object, no prose, no markdown fences:
   ],
   "findings": [
     { "kind": "hard-failure", "title": "Short statement", "detail": "Exact evidence: error text, URL, HTTP status" }
-  ]
+  ]${evidenceField}
 }
 Empty arrays are fine. An honest empty report beats an invented one.`;
 }
@@ -304,7 +398,7 @@ Empty arrays are fine. An honest empty report beats an invented one.`;
  */
 export function parseExplorerReport(text: string): ExplorerReport | undefined {
   const raw = (extractJsonObject(text) ?? salvageReportArrays(text)) as
-    | { flows?: unknown; findings?: unknown; candidates?: unknown; leads?: unknown }
+    | { flows?: unknown; findings?: unknown; candidates?: unknown; leads?: unknown; evidenceUrl?: unknown }
     | undefined;
   if (!raw) return undefined;
 
@@ -356,7 +450,9 @@ export function parseExplorerReport(text: string): ExplorerReport | undefined {
       leads.push({ hint: l.hint, url: typeof l.url === 'string' ? l.url : undefined });
     }
   }
-  return { flows, findings, candidates, leads };
+  const evidenceUrl =
+    typeof raw.evidenceUrl === 'string' && /^https?:\/\//.test(raw.evidenceUrl) ? raw.evidenceUrl : undefined;
+  return { flows, findings, candidates, leads, evidenceUrl };
 }
 
 /**

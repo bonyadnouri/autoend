@@ -206,7 +206,8 @@ describe('publishRun', () => {
     const byId = Object.fromEntries(tests.map((t) => [t.id, t]));
     expect(byId.login.status).toBe('pass');
     expect(byId.checkout.status).toBe('fail');
-    expect(byId.wishlist.status).toBe('not-executed');
+    // A 'discovered' flow was verified by running it, so it publishes as a pass.
+    expect(byId.wishlist.status).toBe('pass');
     expect(byId.checkout.related_issue_ids).toEqual(['reg-1']);
     expect(byId.checkout.has_investigation).toBe(true);
     expect(byId.login.has_investigation).toBe(false);
@@ -300,6 +301,6 @@ describe('publishRun', () => {
     expect(result).toEqual({ skipped: false, tests: 3, issues: 2, investigations: 1 });
     expect(h.inserted.analyses).toBeUndefined();
     const update = h.ops.find((o) => o.table === 'analyses' && o.op === 'update');
-    expect(update?.obj).toMatchObject({ user_flows: 3, tests_passed: 1 });
+    expect(update?.obj).toMatchObject({ user_flows: 3, tests_passed: 2 });
   });
 });

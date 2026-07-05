@@ -11,16 +11,30 @@ function screenType(path: string): string {
   return 'core';
 }
 
-function testDbStatus(status: TestStatusFact['status']): 'pass' | 'fail' | 'not-executed' {
-  if (status === 'passed' || status === 'healed') return 'pass';
+function testDbStatus(status: TestStatusFact['status']): 'pass' | 'fail' | 'not-executed' | 'running' {
+  if (status === 'running') return 'running';
   if (status === 'failed') return 'fail';
-  return 'not-executed';
+  // 'passed', 'healed', and 'discovered' all mean the flow was verified by running.
+  return 'pass';
+}
+
+/** Child tables scoped by analysis_id that a fresh full run replaces wholesale. */
+const SEEDED_TABLES = ['screen_edges', 'screens', 'journeys', 'insights', 'tests', 'issues', 'investigations'] as const;
+
+function appName(target: string): string {
+  try {
+    return new URL(target).host;
+  } catch {
+    return target;
+  }
 }
 
 /** Maps run facts to Lumen Supabase tables. Never throws. */
 export class SupabaseReporter implements RunReporter {
   private seq = 0;
   private chain: Promise<void> = Promise.resolve();
+  /** Insertion counter used to lay freshly discovered screens out in a grid. */
+  private screenCount = 0;
 
   constructor(
     private readonly supabase: SupabaseClient,
@@ -41,6 +55,13 @@ export class SupabaseReporter implements RunReporter {
 
   async runStarted(info: RunStartedInfo): Promise<void> {
     this.runId = info.runId;
+    // A full run rebuilds the whole picture, so wipe the previous run's (or the
+    // seeded demo's) graph/tests up front — otherwise stale ShopFlow screens,
+    // edges and tests linger next to the live results. Single-test runs touch
+    // only their own row and must leave everything else intact.
+    if (info.kind === 'full') {
+      this.enqueue(() => this.clearSeededData(info.target));
+    }
     this.enqueue(async () => {
       const { error } = await this.supabase.from('runs').upsert({
         id: info.runId,
@@ -54,6 +75,36 @@ export class SupabaseReporter implements RunReporter {
       if (error) throw error;
     });
     await this.flush();
+  }
+
+  /**
+   * Delete this analysis's stale child rows and reset its summary counters so
+   * the UI starts the run from a clean slate. The analyses row itself is kept
+   * (its id is referenced everywhere and re-created lazily by publish anyway).
+   */
+  private async clearSeededData(target: string): Promise<void> {
+    this.screenCount = 0;
+    for (const table of SEEDED_TABLES) {
+      const { error } = await this.supabase.from(table).delete().eq('analysis_id', this.analysisId);
+      if (error) throw error;
+    }
+    await this.supabase
+      .from('analyses')
+      .update({
+        app_name: appName(target),
+        app_url: target,
+        user_flows: 0,
+        tests_executed: 0,
+        tests_passed: 0,
+        tests_failed: 0,
+        tests_not_executed: 0,
+        critical_issues: 0,
+        screens_discovered: 0,
+        coverage_percent: 0,
+        exploration_log: [],
+        exploration_screen_order: [],
+      })
+      .eq('id', this.analysisId);
   }
 
   async runFinished(summary: RunSummary): Promise<void> {
@@ -103,13 +154,18 @@ export class SupabaseReporter implements RunReporter {
       if (updateError) throw updateError;
       if (updated && updated.length > 0) return;
 
+      // No auto-layout in the UI: lay newly discovered screens out in a grid so
+      // a fresh run's graph is readable instead of a pile stacked at the origin.
+      const col = this.screenCount % 4;
+      const row = Math.floor(this.screenCount / 4);
+      this.screenCount += 1;
       const { error: insertError } = await this.supabase.from('screens').insert({
         analysis_id: this.analysisId,
         id: screen.id,
         name,
         type: screenType(screen.path),
         description: `Discovered at ${screen.path}`,
-        position: { x: 0, y: 0 },
+        position: { x: 80 + col * 320, y: 80 + row * 200 },
         status: screen.status,
         is_entry_point: screen.path === '/',
         accent: SCREEN_ACCENT,
@@ -143,7 +199,8 @@ export class SupabaseReporter implements RunReporter {
 
   async testStatus(update: TestStatusFact): Promise<void> {
     this.enqueue(async () => {
-      const previouslyPassed = update.status === 'passed' || update.status === 'healed';
+      const previouslyPassed =
+        update.status === 'passed' || update.status === 'healed' || update.status === 'discovered';
       const { error } = await this.supabase.from('tests').upsert(
         {
           analysis_id: this.analysisId,

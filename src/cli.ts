@@ -105,7 +105,14 @@ async function main(): Promise<void> {
 
   console.log(`${pc.cyan('Run starting')} ${target.href} ${pc.dim(`· effort ${effort}`)}`);
   const startedMs = Date.now();
-  const { artifactDir, artifact } = await executeRun({ target, effort, repoRoot, model });
+  const { artifactDir, artifact } = await executeRun({
+    target,
+    effort,
+    repoRoot,
+    model,
+    runtime: config?.runtime,
+    cloudRepo: config?.cloudRepo,
+  });
   const seconds = ((Date.now() - startedMs) / 1000).toFixed(1);
 
   const failures = artifact.findings.filter((f) => f.kind === 'hard-failure').length;

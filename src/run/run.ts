@@ -1,6 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { release } from 'node:os';
-import { resolveModel } from '../agents/harness.js';
+import { resolveModel, type AgentRuntime } from '../agents/harness.js';
+import { resolveRuntime } from '../config.js';
+import { EVIDENCE_BUCKET, supabaseCredentials } from '../publish/supabase-client.js';
+import type { EvidenceUpload } from '../explore/explorer.js';
 import { listFlows } from '../map/flow-map.js';
 import { exploreDeep } from '../explore/deep.js';
 import { explore, type ExplorationResult } from '../explore/explorer.js';
@@ -26,6 +29,10 @@ export interface RunOptions {
   reporter?: RunReporter;
   /** Skip phase 2 (single-test replay from daemon). */
   skipExploration?: boolean;
+  /** Where explorers run: 'local' (default) or 'cloud'; falls back to AUTOEND_RUNTIME. */
+  runtime?: AgentRuntime;
+  /** Repo a cloud explorer clones; ignored for local runtime. */
+  cloudRepo?: string;
 }
 
 export interface RunOutcome {
@@ -39,6 +46,18 @@ export interface RunOutcome {
  */
 export function filterSuppressed(findings: Finding[], suppressed: string[]): Finding[] {
   return findings.filter((f) => f.kind !== 'advisory' || !suppressed.includes(f.title));
+}
+
+/**
+ * Cloud explorers upload their own recording (the WebM lives in their VM, not
+ * on the host). Returns the Storage coordinates they need, or undefined for
+ * local runs / when Supabase creds are absent — callers degrade to no evidence.
+ */
+function cloudEvidenceUpload(runtime: AgentRuntime, runId: string): EvidenceUpload | undefined {
+  if (runtime !== 'cloud') return undefined;
+  const creds = supabaseCredentials();
+  if (!creds) return undefined;
+  return { supabaseUrl: creds.url, key: creds.key, bucket: EVIDENCE_BUCKET, runId };
 }
 
 /** Titles from .autoend/suppressed.json; missing or corrupt file means nothing suppressed. */
@@ -103,6 +122,15 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
       try {
         model = await resolveModel(apiKey, opts.model);
         console.log(`agents run on model "${model}" (ADR-0009)`);
+        const runtime = opts.runtime ?? resolveRuntime();
+        const evidenceUpload = cloudEvidenceUpload(runtime, runId);
+        if (runtime === 'cloud') {
+          console.log(
+            evidenceUpload
+              ? 'explorers run on Cursor cloud VMs (ADR-0003); recordings upload to Supabase Storage'
+              : 'explorers run on Cursor cloud VMs, but SUPABASE_URL/key are unset — recordings will not upload',
+          );
+        }
         const base = {
           repoRoot: opts.repoRoot,
           target: opts.target,
@@ -113,6 +141,9 @@ export async function executeRun(opts: RunOptions): Promise<RunOutcome> {
           model,
           apiKey,
           reporter,
+          runtime,
+          cloudRepo: opts.cloudRepo,
+          evidenceUpload,
         };
         if (shape.kind === 'smoke') {
           exploration = await explore(base);

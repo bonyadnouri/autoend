@@ -3,21 +3,35 @@ import { Agent, Cursor } from '@cursor/sdk';
 /**
  * The one place autoend spawns Cursor SDK agents (ADR-0003). Every fleet role
  * — smoke/persona explorers, Recon, Verifier, Triage — is a single prompt sent
- * to a fresh local agent, raced against a wall-clock kill. Centralized so the
- * harness stays a swappable module (ADR-0003 consequences).
+ * to a fresh agent (local machine or Cursor-hosted cloud VM), raced against a
+ * wall-clock kill. Centralized so the harness stays a swappable module
+ * (ADR-0003 consequences).
  */
+
+/**
+ * Cloud agents must clone a repo even when the job never touches it (autoend
+ * explorers only need the VM's shell + browser). The public autoend repo is a
+ * cheap, safe default clone target.
+ */
+export const DEFAULT_CLOUD_REPO = 'https://github.com/bonyadnouri/autoend';
+
+export type AgentRuntime = 'local' | 'cloud';
 
 export interface AgentJob {
   /** Agent name, surfaced in Cursor's UI/logs. */
   name: string;
   prompt: string;
-  /** Working directory the agent's tools operate in. */
+  /** Working directory the agent's tools operate in (local runtime). */
   cwd: string;
   /** Model id (ADR-0009: strong pinned model, resolved once per Run). */
   model: string;
   apiKey: string;
   /** Hard wall-clock kill for the whole job. */
   timeoutMs: number;
+  /** Where the agent executes; default 'local'. Cloud = Cursor-hosted Linux VM. */
+  runtime?: AgentRuntime;
+  /** Repo URL a cloud agent clones (cloud VMs require one); ignored for local. */
+  cloudRepo?: string;
 }
 
 /**
@@ -29,11 +43,17 @@ export interface AgentJob {
  */
 export async function runAgentJob(job: AgentJob): Promise<string | undefined> {
   try {
+    // Always set local or cloud explicitly — the SDK silently defaults to
+    // local when neither is present, which would mask a misconfigured runtime.
+    const placement =
+      job.runtime === 'cloud'
+        ? { cloud: { repos: [{ url: job.cloudRepo ?? DEFAULT_CLOUD_REPO }] } }
+        : { local: { cwd: job.cwd } };
     const agent = await Agent.create({
       name: job.name,
       model: { id: job.model },
       apiKey: job.apiKey,
-      local: { cwd: job.cwd },
+      ...placement,
     });
     try {
       const run = await agent.send(job.prompt);
