@@ -41,7 +41,8 @@ export interface Diagnosis {
 }
 
 export interface ConsoleEntry {
-  level: 'error' | 'warning';
+  /** Normalized console message tier; non-error tiers give the run's full log. */
+  level: 'error' | 'warning' | 'info' | 'debug' | 'log';
   text: string;
   /** Milliseconds since the Flow's execution started. */
   tMs: number;
@@ -53,6 +54,8 @@ export interface NetworkEntry {
   /** HTTP status; 0 = request failed/aborted before a response. */
   status: number;
   tMs: number;
+  /** Round-trip time in ms when Playwright timing is available. */
+  durationMs?: number;
 }
 
 export interface StepResult {
@@ -76,6 +79,12 @@ export interface Finding {
   kind: FindingKind;
   /** The Flow this Finding is attached to; Regressions always have one. */
   flowId?: string;
+  /**
+   * Normalized screen id (path) where the Finding was observed, when known.
+   * Explorer findings carry the page they happened on so publish can redden
+   * that node on the map; absent for findings with no locatable screen.
+   */
+  screenId?: string;
   title: string;
   detail: string;
   /** Path to WebM Evidence, relative to the Run artifact's evidence/ dir. */
@@ -108,6 +117,12 @@ export interface FlowSnapshot {
   timeline?: StepResult[];
   evidence?: string;
   durationMs?: number;
+  /** Console output captured while running the flow (all tiers, capped). */
+  console?: ConsoleEntry[];
+  /** Endpoint requests captured while running the flow (capped). */
+  network?: NetworkEntry[];
+  /** The executable Playwright flow script — the concrete, portable reproduction. */
+  script?: string;
 }
 
 export interface Environment {

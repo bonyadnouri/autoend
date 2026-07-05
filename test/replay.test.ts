@@ -29,6 +29,13 @@ const THROWING_FLOW = `export default async function flow(page, target) {
 }
 `;
 
+// Navigates to a real page, then follows a link to a document that 404s.
+const MISSING_PAGE_FLOW = `export default async function flow(page, target) {
+  await page.goto(new URL('/', target).href);
+  await page.goto(new URL('/gone', target).href);
+}
+`;
+
 // Flow scripts are plain JS-in-.ts so Node's native type stripping always applies.
 const PASSING_FLOW = `export default async function flow(page, target) {
   await page.goto(new URL('/', target).href);
@@ -53,6 +60,12 @@ beforeAll(async () => {
   server = createServer((req, res) => {
     if (req.url === '/missing.png') {
       res.writeHead(404).end();
+      return;
+    }
+    // A real document 404 — the destination the app links to but that isn't a page.
+    if (req.url === '/gone') {
+      res.writeHead(404, { 'content-type': 'text/html' });
+      res.end('<!doctype html><html><body><h1>Not found</h1></body></html>');
       return;
     }
     res.writeHead(200, { 'content-type': 'text/html' });
@@ -127,6 +140,41 @@ describe('flow capture', () => {
     for (const s of outcome.screenshots) {
       await expect(access(join(evidenceDir, s.file))).resolves.toBeUndefined();
     }
+  }, 30_000);
+
+  it('never records a screen for an HTTP 404 destination and reports it as a bad screen', async () => {
+    const scriptPath = join(repo, 'missing-page-flow.mts');
+    await writeFile(scriptPath, MISSING_PAGE_FLOW);
+    const evidenceDir = join(repo, 'evidence-404');
+    await mkdir(evidenceDir, { recursive: true });
+
+    const seen: string[] = [];
+    const dropped: string[] = [];
+    const reporter = {
+      runStarted: async () => {},
+      runFinished: async () => {},
+      event: async () => {},
+      screenSeen: async (s: { id: string }) => {
+        seen.push(s.id);
+      },
+      screenDropped: async (id: string) => {
+        dropped.push(id);
+      },
+      edgeSeen: async () => {},
+      testStatus: async () => {},
+    };
+
+    const outcome = await runFlowScript(browser, scriptPath, target, evidenceDir, '404', { reporter });
+
+    // The 404 page is not a real screen.
+    expect(outcome.visitedScreenIds).toContain('/');
+    expect(outcome.visitedScreenIds).not.toContain('/gone');
+    expect(outcome.badScreens).toEqual([{ id: '/gone', status: 404 }]);
+    // It never persists as a screen: either suppressed up front or dropped after.
+    const goneWasSeen = seen.includes('/gone');
+    expect(goneWasSeen ? dropped.includes('/gone') : true).toBe(true);
+    // Ending on a 404 is a semantic failure.
+    expect(outcome.badEndState).toContain('404');
   }, 30_000);
 
   it('labels the terminal screenshot at-failure and the terminal step failed on a throwing flow', async () => {

@@ -8,6 +8,19 @@ export interface AutoendConfig {
   effort: Effort;
   /** Cursor model id for all agent roles; absent = strongest available (ADR-0009). */
   model?: string;
+  /** Supabase analysis id for publish/stream (default: shopflow-default). */
+  analysisId?: string;
+  /** Where exploration agents run: 'local' (default) or 'cloud' (Cursor Linux VM). */
+  runtime?: 'local' | 'cloud';
+  /** Repo URL cloud agents clone; defaults to the public autoend repo. */
+  cloudRepo?: string;
+}
+
+/** Resolve the agent runtime: env override → config → local. */
+export function resolveRuntime(config?: AutoendConfig): 'local' | 'cloud' {
+  const env = process.env.AUTOEND_RUNTIME;
+  if (env === 'cloud' || env === 'local') return env;
+  return config?.runtime ?? 'local';
 }
 
 export function configPath(repoRoot: string): string {

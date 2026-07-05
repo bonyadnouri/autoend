@@ -27,10 +27,16 @@
   "files": [
     "dist"
   ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./run": "./dist/run/run.js",
+    "./stream": "./dist/stream/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
+    "serve": "tsx src/cli.ts serve",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "bench:mini": "tsx bench/run-mini.ts",

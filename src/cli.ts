@@ -10,9 +10,11 @@ import { runsDir } from './report/artifact.js';
 import { EFFORT_LEVELS, isEffort, type Effort } from './run/effort.js';
 import { executeRun } from './run/run.js';
 import { runSetupWizard } from './setup/wizard.js';
+import { runServe } from './serve/serve.js';
 
 const USAGE = `Usage:
   autoend init               guided setup (target, effort, API key)
+  autoend serve              watch Supabase for queued runs (Lumen integration)
   autoend [target-url]       start a Run (falls back to your configured target)
   autoend clean              delete all local Run artifacts
 
@@ -21,6 +23,7 @@ const USAGE = `Usage:
 Options:
   -e, --effort <level>   ${EFFORT_LEVELS.join(' | ')} (default: from config, else mid)
       --model <id>       Cursor model id for all agents (default: strongest available)
+      --runtime <where>  local | cloud — where explorers run (default: from config/env, else local)
   -h, --help             show this help
 `;
 
@@ -30,9 +33,21 @@ async function main(): Promise<void> {
     options: {
       effort: { type: 'string', short: 'e' },
       model: { type: 'string' },
+      runtime: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
+
+  // A --runtime flag (serve or a plain Run) overrides config/env for this process.
+  let runtimeFlag: 'local' | 'cloud' | undefined;
+  if (values.runtime !== undefined) {
+    if (values.runtime !== 'local' && values.runtime !== 'cloud') {
+      console.error(`error: unknown runtime "${values.runtime}" (expected local or cloud)`);
+      process.exitCode = 2;
+      return;
+    }
+    runtimeFlag = values.runtime;
+  }
 
   if (values.help) {
     process.stdout.write(USAGE);
@@ -49,6 +64,10 @@ async function main(): Promise<void> {
   if (command === 'clean') {
     await rm(runsDir(repoRoot), { recursive: true, force: true });
     console.log('Local Run artifacts deleted.');
+    return;
+  }
+  if (command === 'serve') {
+    await runServe({ repoRoot, runtime: runtimeFlag });
     return;
   }
   if (positionals.length > 1) {
@@ -99,7 +118,14 @@ async function main(): Promise<void> {
 
   console.log(`${pc.cyan('Run starting')} ${target.href} ${pc.dim(`· effort ${effort}`)}`);
   const startedMs = Date.now();
-  const { artifactDir, artifact } = await executeRun({ target, effort, repoRoot, model });
+  const { artifactDir, artifact } = await executeRun({
+    target,
+    effort,
+    repoRoot,
+    model,
+    runtime: runtimeFlag ?? config?.runtime,
+    cloudRepo: config?.cloudRepo,
+  });
   const seconds = ((Date.now() - startedMs) / 1000).toFixed(1);
 
   const failures = artifact.findings.filter((f) => f.kind === 'hard-failure').length;

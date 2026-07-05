@@ -1,8 +1,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
-.autoend/runs/
+.autoend/
 .env
-excalidraw.log
+*.log
 .superpowers/
 .claude/

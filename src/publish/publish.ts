@@ -1,8 +1,9 @@
 import { basename } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Finding, FlowSnapshot, RunArtifact } from '../report/types.js';
+import type { ConsoleEntry, Finding, FlowSnapshot, NetworkEntry, RunArtifact, StepResult } from '../report/types.js';
+import { screenId, screenTitle } from '../stream/screen-id.js';
 import { uploadEvidence } from './evidence.js';
-import { ANALYSIS_ID, getSupabase } from './supabase-client.js';
+import { getSupabase, resolveAnalysisId } from './supabase-client.js';
 
 export interface PublishResult {
   skipped: boolean;
@@ -10,6 +11,14 @@ export interface PublishResult {
   issues: number;
   investigations: number;
 }
+
+/**
+ * How a publish reconciles with existing project data:
+ *   - 'replace': a full run — prune the analysis down to this run's rows.
+ *   - 'merge': a single-test re-run — upsert only the affected rows and keep
+ *     every other test/journey/issue/insight/screen-link in the project.
+ */
+export type PublishMode = 'replace' | 'merge';
 
 /** Row shapes mirror the Lumen Supabase schema (see 001_schema.sql / dbMappers.ts). */
 interface TestRow {
@@ -22,10 +31,14 @@ interface TestRow {
   steps: Array<{ action: string; expected: string }>;
   expected_result: string;
   actual_result: string;
-  status: 'pass' | 'fail' | 'not-executed';
+  status: 'pass' | 'fail' | 'warning' | 'not-executed';
   duration_ms: number;
   related_issue_ids: string[];
   has_investigation: boolean;
+  /** Human-readable numbered reproduction recipe. */
+  repro_steps: string[];
+  /** Exact executable Playwright flow — the concrete reproduction. */
+  script: string | null;
 }
 
 interface IssueRow {
@@ -41,6 +54,38 @@ interface IssueRow {
   status: 'open';
 }
 
+interface JourneyRow {
+  id: string;
+  analysis_id: string;
+  name: string;
+  description: string;
+  status: 'healthy' | 'warning' | 'broken';
+  coverage: number;
+  steps: Array<{ screenId: string; action: string }>;
+  test_case_ids: string[];
+}
+
+interface InsightRow {
+  id: string;
+  analysis_id: string;
+  title: string;
+  category:
+    | 'missing-functionality'
+    | 'broken-flow'
+    | 'ux-inconsistency'
+    | 'unreachable-screen'
+    | 'unexpected-navigation'
+    | 'suggested-improvement';
+  description: string;
+  detail: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  related_screen_id: string | null;
+  related_journey_id: string | null;
+  issue_id: string | null;
+  /** Actionable next step for a developer — the "so what do I do" of an insight. */
+  suggested_fix: string;
+}
+
 interface InvestigationRow {
   analysis_id: string;
   test_id: string;
@@ -48,9 +93,75 @@ interface InvestigationRow {
 }
 
 function testStatus(status: FlowSnapshot['status']): TestRow['status'] {
-  if (status === 'passed') return 'pass';
   if (status === 'failed') return 'fail';
-  return 'not-executed';
+  // 'passed' and 'discovered' both mean the flow was verified by running it
+  // (a discovered flow only enters the map after admitProposedFlows passes it).
+  return 'pass';
+}
+
+/**
+ * The `tests` row a Finding hangs its Evidence off in the Lumen UI. Regressions
+ * reuse their Flow's id (the flow is already a test); Findings with no Flow
+ * (Defects, explorer hard-failures/advisories) fall back to their own id, and
+ * get a synthetic test row so their video is reachable (issue -> test ->
+ * investigation is the only path the UI renders video through).
+ */
+function subjectId(finding: Finding): string {
+  return finding.flowId ?? finding.id;
+}
+
+/**
+ * A Finding without a Flow becomes a synthetic test so its evidence is reachable.
+ * Its status reflects severity, never execution: hard-failures/defects/regressions
+ * are failures; advisories were still observed (they carry evidence), so they're
+ * a 'warning', not 'not-executed'. 'not-executed' is reserved for tests that
+ * genuinely never ran.
+ */
+function findingTestStatus(kind: Finding['kind']): TestRow['status'] {
+  return kind === 'advisory' ? 'warning' : 'fail';
+}
+
+/** Turn a run timeline into a numbered, human-readable reproduction recipe. */
+function reproSteps(timeline: StepResult[] | undefined): string[] {
+  return (timeline ?? []).map((step, index) => `${index + 1}. ${step.label}`);
+}
+
+/** Best-effort screen id (path) embedded in a timeline label like "goto /login". */
+function screenIdFromLabel(label: string): string {
+  const match = /(\/[^\s]*)/.exec(label);
+  return match ? match[1] : '';
+}
+
+/** A Flow's timeline as ordered Journey steps, each pinned to the screen it touched. */
+function journeySteps(timeline: StepResult[] | undefined): JourneyRow['steps'] {
+  return (timeline ?? []).map((step) => ({
+    screenId: screenIdFromLabel(step.label),
+    action: step.label,
+  }));
+}
+
+/**
+ * Every verified Flow is a user Journey in the UI: a named path through the app
+ * with a coverage score and a back-reference to its test. Failed flows surface
+ * as broken journeys so the graph shows where a path regressed. Journeys share
+ * their Flow's id, which is exactly what each test's `journey_id` points at.
+ */
+function buildJourneys(artifact: RunArtifact, analysisId: string): JourneyRow[] {
+  return artifact.flows.map((flow) => ({
+    id: flow.id,
+    analysis_id: analysisId,
+    name: flow.title,
+    description:
+      flow.status === 'discovered'
+        ? 'Discovered during exploration'
+        : flow.status === 'failed'
+          ? 'Regressed during this run'
+          : 'Verified user flow',
+    status: flow.status === 'failed' ? 'broken' : 'healthy',
+    coverage: flow.status === 'failed' ? 0 : 100,
+    steps: journeySteps(flow.timeline),
+    test_case_ids: [flow.id],
+  }));
 }
 
 function severity(kind: Finding['kind']): IssueRow['severity'] {
@@ -81,6 +192,41 @@ function evidenceLabel(label: string): string {
   return 'At failure';
 }
 
+/** Map a captured console tier to the Lumen LogEntry level (types/index.ts). */
+function logLevel(level: ConsoleEntry['level']): 'error' | 'warn' | 'info' | 'debug' {
+  if (level === 'error') return 'error';
+  if (level === 'warning') return 'warn';
+  if (level === 'debug') return 'debug';
+  return 'info';
+}
+
+/** Captured console entries → Lumen LogEntry rows (the investigation's Logs tab). */
+function logRows(entries: ConsoleEntry[] | undefined): Array<Record<string, unknown>> {
+  return (entries ?? []).map((entry, index) => ({
+    id: `log-${index}`,
+    level: logLevel(entry.level),
+    source: 'console',
+    tMs: entry.tMs,
+    message: entry.text,
+  }));
+}
+
+/** Captured endpoint requests → Lumen NetworkRequest rows (the Network tab). */
+function networkRows(entries: NetworkEntry[] | undefined): Array<Record<string, unknown>> {
+  return (entries ?? []).map((entry, index) => ({
+    id: `net-${index}`,
+    method: entry.method.toUpperCase(),
+    endpoint: entry.url,
+    status: entry.status,
+    durationMs: entry.durationMs ?? 0,
+    // Only a real HTTP error is a failure. Status 0 means the request never got
+    // a response — usually a benign abort (SPA navigation cancelling in-flight
+    // fetches/prefetches), not something the app got wrong.
+    failed: entry.status >= 400,
+    tMs: entry.tMs,
+  }));
+}
+
 function appName(target: string): string {
   try {
     return new URL(target).host;
@@ -92,17 +238,25 @@ function appName(target: string): string {
 /** Resolve an evidence filename (possibly a relative path) to its uploaded public URL. */
 function evidenceUrl(urls: Map<string, string>, file: string | undefined): string | null {
   if (!file) return null;
+  // Cloud explorers already uploaded their recording and reported a full URL.
+  if (/^https?:\/\//.test(file)) return file;
   return urls.get(file) ?? urls.get(basename(file)) ?? null;
 }
 
-function buildTests(artifact: RunArtifact, investigatedFlowIds: Set<string>): TestRow[] {
-  return artifact.flows.map((flow) => {
+function buildTests(
+  artifact: RunArtifact,
+  investigatedIds: Set<string>,
+  analysisId: string,
+): TestRow[] {
+  const flowIds = new Set(artifact.flows.map((flow) => flow.id));
+  const tests: TestRow[] = artifact.flows.map((flow) => {
     const related = artifact.findings.filter((f) => f.flowId === flow.id);
     return {
       id: flow.id,
-      analysis_id: ANALYSIS_ID,
+      analysis_id: analysisId,
       name: flow.title,
-      journey_id: '',
+      // Each Flow-backed test belongs to the Journey built from the same Flow.
+      journey_id: flow.id,
       screen_ids: [],
       preconditions: [],
       steps: (flow.timeline ?? []).map((step) => ({
@@ -119,54 +273,139 @@ function buildTests(artifact: RunArtifact, investigatedFlowIds: Set<string>): Te
       status: testStatus(flow.status),
       duration_ms: flow.durationMs ?? 0,
       related_issue_ids: related.map((f) => f.id),
-      has_investigation: investigatedFlowIds.has(flow.id),
+      has_investigation: investigatedIds.has(flow.id),
+      repro_steps: reproSteps(flow.timeline),
+      script: flow.script ?? null,
     };
   });
+
+  // Synthetic test per Flow-less Finding that carries detail, so its Evidence
+  // is reachable in the UI (issue -> related test -> investigation -> video).
+  for (const finding of artifact.findings) {
+    const sid = subjectId(finding);
+    if (flowIds.has(sid) || !findingHasDetail(finding)) continue;
+    tests.push({
+      id: sid,
+      analysis_id: analysisId,
+      name: finding.title,
+      journey_id: '',
+      screen_ids: [],
+      preconditions: [],
+      steps: (finding.timeline ?? []).map((step) => ({
+        action: step.label,
+        expected: step.status === 'passed' ? 'Step succeeds' : 'Step fails',
+      })),
+      expected_result: finding.expectation?.statement ?? 'Behavior matches expectations',
+      actual_result: finding.detail,
+      status: findingTestStatus(finding.kind),
+      duration_ms: 0,
+      related_issue_ids: [finding.id],
+      has_investigation: investigatedIds.has(sid),
+      repro_steps: reproSteps(finding.timeline),
+      script: null,
+    });
+  }
+  return tests;
 }
 
-function buildIssues(artifact: RunArtifact): IssueRow[] {
+/** Map a Finding kind to the Lumen Insight taxonomy (types/index.ts). */
+function insightCategory(kind: Finding['kind']): InsightRow['category'] {
+  if (kind === 'hard-failure' || kind === 'regression') return 'broken-flow';
+  if (kind === 'defect') return 'ux-inconsistency';
+  return 'suggested-improvement';
+}
+
+/**
+ * A concrete next step for the reader. Prefers an agent-provided fix (a
+ * Diagnosis carries the filing agent's judgment); otherwise derives a sensible
+ * default from the finding's kind/shape so every insight is actionable.
+ */
+function suggestedFix(finding: Finding): string {
+  const agentFix = finding.diagnosis?.rootCause?.trim();
+  if (agentFix) return agentFix;
+  if (finding.title.startsWith('Expected page')) {
+    return 'Create the missing page, or remove/redirect the link that points to it so users never hit a dead end.';
+  }
+  switch (finding.kind) {
+    case 'regression':
+      return 'Restore this flow: it worked before and fails now — review the recent change that broke this path.';
+    case 'hard-failure':
+      return 'Fix the server/page error surfaced in the logs and network panel before shipping.';
+    case 'defect':
+      return finding.expectation?.statement
+        ? `Align the behavior with the expectation: ${finding.expectation.statement}`
+        : 'Correct the behavior so it matches the documented/expected outcome.';
+    default:
+      return 'Review this observation and address it if it affects the user experience.';
+  }
+}
+
+/**
+ * Insights are the analysis-level readout the UI's Insights page renders. Each
+ * Finding produces one, linked back to its Issue so a reader can pivot from the
+ * high-level observation to the concrete issue and its investigation. Advisories
+ * (which never became Issues) still surface here as improvement suggestions.
+ */
+function buildInsights(artifact: RunArtifact, analysisId: string): InsightRow[] {
+  return artifact.findings.map((finding) => ({
+    id: `insight-${finding.id}`,
+    analysis_id: analysisId,
+    title: finding.title,
+    category: insightCategory(finding.kind),
+    description: finding.detail || finding.title,
+    detail: finding.diagnosis?.rootCause || finding.detail || finding.title,
+    severity: severity(finding.kind),
+    related_screen_id: null,
+    related_journey_id: null,
+    issue_id: finding.id,
+    suggested_fix: suggestedFix(finding),
+  }));
+}
+
+function buildIssues(artifact: RunArtifact, analysisId: string): IssueRow[] {
   return artifact.findings.map((finding) => ({
     id: finding.id,
-    analysis_id: ANALYSIS_ID,
+    analysis_id: analysisId,
     title: finding.title,
     description: finding.detail,
     severity: severity(finding.kind),
-    related_screen_id: '',
+    related_screen_id: finding.screenId ?? '',
     related_journey_id: null,
     suggested_fix: finding.diagnosis?.rootCause ?? '',
-    related_test_ids: finding.flowId ? [finding.flowId] : [],
+    related_test_ids: [subjectId(finding)],
     status: 'open',
   }));
 }
 
 /** Does this Finding carry enough runtime detail to warrant an investigation payload? */
-function hasDetail(finding: Finding): boolean {
+function findingHasDetail(finding: Finding): boolean {
   return Boolean(
-    finding.flowId &&
-      (finding.evidence ||
-        finding.diagnosis ||
-        finding.console?.length ||
-        finding.network?.length ||
-        finding.timeline?.length ||
-        finding.screenshots?.length),
+    finding.evidence ||
+      finding.diagnosis ||
+      finding.console?.length ||
+      finding.network?.length ||
+      finding.timeline?.length ||
+      finding.screenshots?.length,
   );
 }
 
 function buildInvestigations(
   artifact: RunArtifact,
   urls: Map<string, string>,
+  analysisId: string,
 ): InvestigationRow[] {
   const flowsById = new Map(artifact.flows.map((flow) => [flow.id, flow]));
   const byFlow = new Map<string, InvestigationRow>();
 
   for (const finding of artifact.findings) {
-    if (!hasDetail(finding) || !finding.flowId) continue;
-    const flow = flowsById.get(finding.flowId);
+    if (!findingHasDetail(finding)) continue;
+    const sid = subjectId(finding);
+    const flow = finding.flowId ? flowsById.get(finding.flowId) : undefined;
     const videoUrl =
       evidenceUrl(urls, finding.evidence) ?? evidenceUrl(urls, flow?.evidence) ?? null;
 
     const payload = {
-      testId: finding.flowId,
+      testId: sid,
       recordedReason: finding.title,
       analysis: finding.diagnosis
         ? {
@@ -189,22 +428,8 @@ function buildInvestigations(
         tMs: shot.tMs,
         imageUrl: evidenceUrl(urls, shot.file),
       })),
-      network: (finding.network ?? []).map((entry, index) => ({
-        id: `net-${index}`,
-        method: entry.method.toUpperCase(),
-        endpoint: entry.url,
-        status: entry.status,
-        durationMs: 0,
-        failed: entry.status === 0 || entry.status >= 400,
-        tMs: entry.tMs,
-      })),
-      logs: (finding.console ?? []).map((entry, index) => ({
-        id: `log-${index}`,
-        level: entry.level === 'warning' ? 'warn' : 'error',
-        source: 'console',
-        tMs: entry.tMs,
-        message: entry.text,
-      })),
+      network: networkRows(finding.network),
+      logs: logRows(finding.console),
       timeline: (finding.timeline ?? []).map((step) => ({
         tMs: step.tMs,
         screenId: '',
@@ -223,10 +448,11 @@ function buildInvestigations(
       },
     };
 
-    // One investigation per flow (composite PK) — the last detailed Finding wins.
-    byFlow.set(finding.flowId, {
-      analysis_id: ANALYSIS_ID,
-      test_id: finding.flowId,
+    // One investigation per subject (composite PK) — the last detailed Finding
+    // for a given subject wins (only collides when several share a flowId).
+    byFlow.set(sid, {
+      analysis_id: analysisId,
+      test_id: sid,
       payload,
     });
   }
@@ -244,7 +470,7 @@ function buildInvestigations(
     const shots = candidates.filter((s) => urls.has(s.file) || urls.has(s.file.split('/').pop()!));
 
     byFlow.set(flow.id, {
-      analysis_id: ANALYSIS_ID,
+      analysis_id: analysisId,
       test_id: flow.id,
       payload: {
         testId: flow.id,
@@ -261,8 +487,8 @@ function buildInvestigations(
           tMs: 0,
           imageUrl: evidenceUrl(urls, shot.file),
         })),
-        network: [],
-        logs: [],
+        network: networkRows(flow.network),
+        logs: logRows(flow.console),
         timeline: (flow.timeline ?? []).map((step) => ({
           tMs: step.tMs,
           screenId: '',
@@ -286,17 +512,29 @@ function buildInvestigations(
   return [...byFlow.values()];
 }
 
-/** Partial summary — only the columns a Run knows; mock columns are preserved. */
-function buildSummary(artifact: RunArtifact) {
-  const passed = artifact.flows.filter((f) => f.status === 'passed').length;
-  const failed = artifact.flows.filter((f) => f.status === 'failed').length;
-  const notExecuted = artifact.flows.filter((f) => f.status === 'discovered').length;
+/**
+ * Partial summary — only the columns a Run knows; mock columns are preserved.
+ * Counts come from the actual published `tests` rows (flows + finding-derived
+ * synthetics), not from `artifact.flows` alone, so a run's fail/not-executed
+ * tallies match what the UI lists. Screens are counted from what the streaming
+ * reporter already wrote (publish never touches the `screens` table).
+ */
+function buildSummary(
+  artifact: RunArtifact,
+  tests: TestRow[],
+  journeys: JourneyRow[],
+  screensDiscovered: number,
+) {
+  const passed = tests.filter((t) => t.status === 'pass').length;
+  const failed = tests.filter((t) => t.status === 'fail').length;
+  const notExecuted = tests.filter((t) => t.status === 'not-executed').length;
   const critical = artifact.findings.filter((f) => f.kind === 'hard-failure').length;
   return {
     app_name: appName(artifact.target),
     app_url: artifact.target,
     analyzed_at: artifact.finishedAt ?? artifact.startedAt,
-    user_flows: artifact.flows.length,
+    user_flows: journeys.length,
+    screens_discovered: screensDiscovered,
     tests_executed: passed + failed,
     tests_passed: passed,
     tests_failed: failed,
@@ -310,6 +548,248 @@ function throwOnError(context: string, error: { message: string } | null): void 
 }
 
 /**
+ * Recompute the analysis summary from what's CURRENTLY in the database for this
+ * project, not from a single run's artifact. A single-test re-run's artifact
+ * holds one flow — deriving the summary from it would report `tests_executed:
+ * 1` and erase the project's real totals. Merge-mode publishes count the whole
+ * project so a re-run only moves the numbers for the test that changed.
+ */
+async function summaryFromDb(
+  supabase: SupabaseClient,
+  artifact: RunArtifact,
+  analysisId: string,
+): Promise<Record<string, unknown>> {
+  const { data: testRows, error: testError } = await supabase
+    .from('tests')
+    .select('status')
+    .eq('analysis_id', analysisId);
+  throwOnError('read tests for summary', testError);
+  const rows = testRows ?? [];
+  const passed = rows.filter((r) => r.status === 'pass').length;
+  const failed = rows.filter((r) => r.status === 'fail').length;
+  const notExecuted = rows.filter((r) => r.status === 'not-executed').length;
+
+  const { count: journeyCount, error: journeyError } = await supabase
+    .from('journeys')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_id', analysisId);
+  throwOnError('count journeys', journeyError);
+  const { count: screenCount, error: screenError } = await supabase
+    .from('screens')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_id', analysisId);
+  throwOnError('count screens', screenError);
+  const { count: criticalCount, error: criticalError } = await supabase
+    .from('issues')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_id', analysisId)
+    .eq('severity', 'critical');
+  throwOnError('count critical issues', criticalError);
+
+  return {
+    app_name: appName(artifact.target),
+    app_url: artifact.target,
+    analyzed_at: artifact.finishedAt ?? artifact.startedAt,
+    user_flows: journeyCount ?? 0,
+    screens_discovered: screenCount ?? 0,
+    tests_executed: passed + failed,
+    tests_passed: passed,
+    tests_failed: failed,
+    tests_not_executed: notExecuted,
+    critical_issues: criticalCount ?? 0,
+  };
+}
+
+/**
+ * Upsert this analysis's rows in `table`, and (in 'replace' mode) prune the
+ * stale ones. Two modes:
+ *   - 'replace' (full run): upsert the fresh rows FIRST, then delete the ones
+ *     no longer present (same analysis, id not in the new set). Upsert-before-
+ *     delete means a mid-publish failure leaves the previous Run's data intact
+ *     rather than an emptied analysis.
+ *   - 'merge' (single-test re-run): upsert ONLY, never prune — re-running one
+ *     test must update its own row and leave every other test/journey/issue in
+ *     the project untouched. Pruning here would wipe the whole project.
+ */
+async function upsertRows(
+  supabase: SupabaseClient,
+  table: string,
+  idColumn: string,
+  rows: Array<Record<string, unknown>>,
+  analysisId: string,
+  prune: boolean,
+): Promise<void> {
+  if (rows.length > 0) {
+    throwOnError(
+      `upsert ${table}`,
+      (await supabase.from(table).upsert(rows, { onConflict: `analysis_id,${idColumn}` })).error,
+    );
+  }
+  if (!prune) return;
+  // Quote each id for the PostgREST `in.(...)` list. Ids are string paths/slugs
+  // (e.g. `/login`, `missing-/gone`) that can contain `/`, `,`, and other
+  // separators; JSON.stringify wraps them in double quotes and escapes any
+  // embedded quotes, so the filter can't be broken (or mis-target rows) by a
+  // raw comma/slash. Unquoted joining silently pruned or kept the wrong rows.
+  const keepIds = rows.map((row) => JSON.stringify(String(row[idColumn])));
+  const pruneAll = supabase.from(table).delete().eq('analysis_id', analysisId);
+  const pruneQuery =
+    keepIds.length > 0 ? pruneAll.not(idColumn, 'in', `(${keepIds.join(',')})`) : pruneAll;
+  throwOnError(`prune ${table}`, (await pruneQuery).error);
+}
+
+/**
+ * The path inside an "Expected page "X" but it was not present" advisory
+ * title, or undefined for any other finding. We control this template in the
+ * explorer prompts, so matching it is reliable.
+ */
+function expectedMissingPath(finding: Finding): string | undefined {
+  if (finding.kind !== 'advisory') return undefined;
+  const match = /^Expected page "([^"]+)"/.exec(finding.title);
+  return match ? match[1] : undefined;
+}
+
+/**
+ * Reconcile the screens graph with the explorer's expected-but-missing
+ * findings. A page the AI expected but that isn't really there is NOT a real
+ * screen — but the user still wants it on the map, as an amber 'warning' node
+ * with no elements ("the AI expected this page; it isn't here"). This is the
+ * only reliable signal for SPA soft-404s: a client-side route with no matching
+ * view renders "not found" without any HTTP response, so status-based dropping
+ * can't see it — the explorer catches it by content and files an advisory.
+ * Broken links (a real control that 404s) are hard-failures and stay red; only
+ * advisory "Expected page" findings become warning nodes here.
+ */
+async function reconcileExpectedMissingScreens(
+  supabase: SupabaseClient,
+  artifact: RunArtifact,
+  analysisId: string,
+): Promise<void> {
+  const ids = new Set<string>();
+  for (const finding of artifact.findings) {
+    const path = expectedMissingPath(finding);
+    if (!path) continue;
+    try {
+      ids.add(screenId(new URL(path, artifact.target).href));
+    } catch {
+      // A path we can't resolve to a URL isn't a screen — skip it.
+    }
+  }
+  for (const id of ids) {
+    // An expected-but-missing page carries no real UI: clear elements/nav and
+    // flag it amber. Update first so a node a flow already created is downgraded
+    // in place (keeping its position); insert only when nothing navigated there.
+    const patch = { status: 'warning', elements: [], navigation: [], expected_actions: [] };
+    const { data: updated, error: updateError } = await supabase
+      .from('screens')
+      .update(patch)
+      .eq('analysis_id', analysisId)
+      .eq('id', id)
+      .select('id');
+    throwOnError('warn missing screen', updateError);
+    if (updated && updated.length > 0) continue;
+    const { error: insertError } = await supabase.from('screens').insert({
+      analysis_id: analysisId,
+      id,
+      name: screenTitle(id),
+      type: 'core',
+      description: 'Expected by exploration but not present',
+      position: { x: 0, y: 0 },
+      status: 'warning',
+      is_entry_point: false,
+      accent: '#f59e0b',
+      elements: [],
+      navigation: [],
+      expected_actions: [],
+      test_case_ids: [],
+      issue_ids: [],
+      last_run_id: artifact.runId,
+    });
+    throwOnError('insert missing screen', insertError);
+  }
+}
+
+/**
+ * Back-link screens to the tests and issues that touch them, and redden any
+ * screen carrying a real failure. Screen rows are streamed by the reporter with
+ * empty `test_case_ids`/`issue_ids`; publish is the first point that knows the
+ * full journey→screen→test/issue graph, so it fills those in. A screen's tests
+ * are every flow whose journey stepped through it; its issues are every finding
+ * raised on one of those flows PLUS every finding attributed directly to it
+ * (finding.screenId — how explorer hard-failures reach the map). A screen with
+ * a critical/high issue is set 'broken' so the map shows red where a failure
+ * actually happened; lower-severity (advisory) issues never change its status.
+ * Only screens that already exist are patched — publish never creates them here.
+ */
+async function reconcileScreenLinks(
+  supabase: SupabaseClient,
+  journeys: JourneyRow[],
+  issues: IssueRow[],
+  analysisId: string,
+): Promise<void> {
+  const { data: rows, error } = await supabase
+    .from('screens')
+    .select('id, status')
+    .eq('analysis_id', analysisId);
+  throwOnError('read screens for linking', error);
+  const existing = new Map((rows ?? []).map((r) => [r.id as string, r.status as string]));
+  if (existing.size === 0) return;
+
+  const severityById = new Map(issues.map((issue) => [issue.id, issue.severity]));
+  const issuesByTest = new Map<string, string[]>();
+  for (const issue of issues) {
+    for (const tid of issue.related_test_ids) {
+      const list = issuesByTest.get(tid) ?? [];
+      list.push(issue.id);
+      issuesByTest.set(tid, list);
+    }
+  }
+
+  const screenTests = new Map<string, Set<string>>();
+  const screenIssues = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, screen: string, value: string) => {
+    if (!existing.has(screen)) return;
+    const set = map.get(screen) ?? new Set<string>();
+    set.add(value);
+    map.set(screen, set);
+  };
+  for (const journey of journeys) {
+    const seen = new Set(journey.steps.map((s) => s.screenId).filter(Boolean));
+    for (const screen of seen) {
+      for (const tid of journey.test_case_ids) {
+        add(screenTests, screen, tid);
+        for (const issueId of issuesByTest.get(tid) ?? []) add(screenIssues, screen, issueId);
+      }
+    }
+  }
+  // Direct attribution: an issue that named the screen it happened on (explorer
+  // findings) links to that screen even when no journey stepped through it.
+  for (const issue of issues) {
+    if (issue.related_screen_id) add(screenIssues, issue.related_screen_id, issue.id);
+  }
+
+  for (const [id, currentStatus] of existing) {
+    const linkedIssues = [...(screenIssues.get(id) ?? [])];
+    // Redden only for a genuine failure (critical/high). Never downgrade a
+    // screen that publish already flagged 'warning' (expected-but-missing) or
+    // that has no serious issue — leave its streamed status untouched.
+    const hasSeriousIssue = linkedIssues.some((iid) => {
+      const sev = severityById.get(iid);
+      return sev === 'critical' || sev === 'high';
+    });
+    const patch: Record<string, unknown> = {
+      test_case_ids: [...(screenTests.get(id) ?? [])],
+      issue_ids: linkedIssues,
+    };
+    if (hasSeriousIssue && currentStatus !== 'warning') patch.status = 'broken';
+    throwOnError(
+      'link screen',
+      (await supabase.from('screens').update(patch).eq('analysis_id', analysisId).eq('id', id)).error,
+    );
+  }
+}
+
+/**
  * Publish a Run's results to the Lumen Supabase. Write order matters:
  * evidence -> children (tests/issues/investigations) -> analyses summary LAST,
  * so `analyses.analyzed_at` acts as the atomic "run fully published" marker and
@@ -318,66 +798,83 @@ function throwOnError(context: string, error: { message: string } | null): void 
 export async function publishRun(
   artifact: RunArtifact,
   evidenceDir: string,
+  analysisId: string = resolveAnalysisId(),
+  mode: PublishMode = 'replace',
 ): Promise<PublishResult> {
   const supabase: SupabaseClient | null = getSupabase();
   if (!supabase) return { skipped: true, tests: 0, issues: 0, investigations: 0 };
 
-  const urls = await uploadEvidence(supabase, artifact.runId, evidenceDir);
+  // 'replace' (full run) prunes the analysis down to this run's rows; 'merge'
+  // (single-test re-run) only upserts the affected rows, leaving every other
+  // test/journey/issue/insight in the project — and every other test's evidence
+  // in the bucket — intact.
+  const prune = mode === 'replace';
 
-  const investigations = buildInvestigations(artifact, urls);
-  const investigatedFlowIds = new Set(investigations.map((row) => row.test_id));
-  const tests = buildTests(artifact, investigatedFlowIds);
-  const issues = buildIssues(artifact);
+  const urls = await uploadEvidence(supabase, artifact.runId, evidenceDir, analysisId, prune);
 
-  // Clear the previous Run's results for this analysis before inserting fresh.
-  throwOnError(
-    'clear investigations',
-    (await supabase.from('investigations').delete().eq('analysis_id', ANALYSIS_ID)).error,
-  );
-  throwOnError(
-    'clear tests',
-    (await supabase.from('tests').delete().eq('analysis_id', ANALYSIS_ID)).error,
-  );
-  throwOnError(
-    'clear issues',
-    (await supabase.from('issues').delete().eq('analysis_id', ANALYSIS_ID)).error,
-  );
+  const investigations = buildInvestigations(artifact, urls, analysisId);
+  const investigatedIds = new Set(investigations.map((row) => row.test_id));
+  const tests = buildTests(artifact, investigatedIds, analysisId);
+  const issues = buildIssues(artifact, analysisId);
+  const journeys = buildJourneys(artifact, analysisId);
 
-  if (tests.length > 0) {
-    throwOnError('insert tests', (await supabase.from('tests').insert(tests)).error);
-  }
-  if (issues.length > 0) {
-    throwOnError('insert issues', (await supabase.from('issues').insert(issues)).error);
-  }
-  if (investigations.length > 0) {
-    throwOnError(
-      'insert investigations',
-      (await supabase.from('investigations').insert(investigations)).error,
-    );
+  const asRows = <T>(rows: T[]): Array<Record<string, unknown>> =>
+    rows as unknown as Array<Record<string, unknown>>;
+  await upsertRows(supabase, 'journeys', 'id', asRows(journeys), analysisId, prune);
+  await upsertRows(supabase, 'tests', 'id', asRows(tests), analysisId, prune);
+  await upsertRows(supabase, 'issues', 'id', asRows(issues), analysisId, prune);
+  await upsertRows(supabase, 'investigations', 'test_id', asRows(investigations), analysisId, prune);
+  await upsertRows(supabase, 'insights', 'id', asRows(buildInsights(artifact, analysisId)), analysisId, prune);
+
+  // Turn expected-but-missing pages into amber warning nodes (0 elements)
+  // before counting, so SPA soft-404s the explorer caught by content show up
+  // as warnings on the map instead of lingering as red/failed screens.
+  await reconcileExpectedMissingScreens(supabase, artifact, analysisId);
+
+  // Back-fill each streamed screen's test_case_ids/issue_ids from the journey
+  // graph so the map's "Generated tests"/"Related issues" counts aren't always
+  // 0. Only in 'replace' mode: this rewrites EVERY screen's links from the run's
+  // journeys, so a single-test run (one journey) would blank every other
+  // screen's links — a merge run leaves the full run's links untouched.
+  if (mode === 'replace') {
+    await reconcileScreenLinks(supabase, journeys, issues, analysisId);
   }
 
   // Commit marker: write the summary last so the UI flips to this Run atomically.
-  const summary = buildSummary(artifact);
+  // A full run derives it from its own artifact; a merge run recomputes it from
+  // the whole project in the DB so a re-run only nudges the changed test's tally.
+  let summary: Record<string, unknown>;
+  if (mode === 'merge') {
+    summary = await summaryFromDb(supabase, artifact, analysisId);
+  } else {
+    // Screens are streamed live by the reporter; count them for the summary
+    // (publish otherwise only reconciles missing-page warnings above).
+    const { count: screenCount, error: screenCountError } = await supabase
+      .from('screens')
+      .select('id', { count: 'exact', head: true })
+      .eq('analysis_id', analysisId);
+    throwOnError('count screens', screenCountError);
+    summary = buildSummary(artifact, tests, journeys, screenCount ?? 0);
+  }
   const { data: existing, error: selectError } = await supabase
     .from('analyses')
     .select('id')
-    .eq('id', ANALYSIS_ID)
+    .eq('id', analysisId)
     .maybeSingle();
   throwOnError('read analysis', selectError);
 
   if (existing) {
     throwOnError(
       'update analysis',
-      (await supabase.from('analyses').update(summary).eq('id', ANALYSIS_ID)).error,
+      (await supabase.from('analyses').update(summary).eq('id', analysisId)).error,
     );
   } else {
     throwOnError(
       'insert analysis',
       (
         await supabase.from('analyses').insert({
-          id: ANALYSIS_ID,
+          id: analysisId,
           ...summary,
-          screens_discovered: 0,
           coverage_percent: 0,
           exploration_log: [],
           exploration_screen_order: [],

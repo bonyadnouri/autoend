@@ -37,7 +37,7 @@ export interface PipelineShape extends ExplorationBudget {
  */
 export const EFFORT_PIPELINES: Record<Effort, PipelineShape> = {
   low: { kind: 'smoke', explorers: 2, waves: 1, seconds: 45, recon: false, verifier: false, triage: false },
-  mid: { kind: 'smoke', explorers: 3, waves: 1, seconds: 90, recon: false, verifier: false, triage: false },
+  mid: { kind: 'smoke', explorers: 3, waves: 1, seconds: 240, recon: false, verifier: false, triage: false },
   // 5 explorers at high: one per archetype, so no persona axis (and none of
   // Recon's Missions for it) is structurally dropped at the entry deep tier.
   high: { kind: 'deep', explorers: 5, waves: 1, seconds: 480, recon: true, verifier: true, triage: true },
