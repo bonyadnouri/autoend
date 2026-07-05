@@ -628,6 +628,72 @@ async function reconcileExpectedMissingScreens(
 }
 
 /**
+ * Back-link screens to the tests and issues that touch them. Screen rows are
+ * streamed by the reporter with empty `test_case_ids`/`issue_ids`; publish is
+ * the first point that knows the full journey→screen→test/issue graph, so it
+ * fills those in. A screen's tests are every flow whose journey stepped through
+ * it; its issues are every finding raised on one of those flows. Only screens
+ * that already exist are patched — publish never creates screens here.
+ */
+async function reconcileScreenLinks(
+  supabase: SupabaseClient,
+  journeys: JourneyRow[],
+  issues: IssueRow[],
+): Promise<void> {
+  const { data: rows, error } = await supabase
+    .from('screens')
+    .select('id')
+    .eq('analysis_id', ANALYSIS_ID);
+  throwOnError('read screens for linking', error);
+  const existing = new Set((rows ?? []).map((r) => r.id as string));
+  if (existing.size === 0) return;
+
+  const issuesByTest = new Map<string, string[]>();
+  for (const issue of issues) {
+    for (const tid of issue.related_test_ids) {
+      const list = issuesByTest.get(tid) ?? [];
+      list.push(issue.id);
+      issuesByTest.set(tid, list);
+    }
+  }
+
+  const screenTests = new Map<string, Set<string>>();
+  const screenIssues = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, screen: string, value: string) => {
+    if (!existing.has(screen)) return;
+    const set = map.get(screen) ?? new Set<string>();
+    set.add(value);
+    map.set(screen, set);
+  };
+  for (const journey of journeys) {
+    const seen = new Set(journey.steps.map((s) => s.screenId).filter(Boolean));
+    for (const screen of seen) {
+      for (const tid of journey.test_case_ids) {
+        add(screenTests, screen, tid);
+        for (const issueId of issuesByTest.get(tid) ?? []) add(screenIssues, screen, issueId);
+      }
+    }
+  }
+
+  for (const id of existing) {
+    const patch = {
+      test_case_ids: [...(screenTests.get(id) ?? [])],
+      issue_ids: [...(screenIssues.get(id) ?? [])],
+    };
+    throwOnError(
+      'link screen',
+      (
+        await supabase
+          .from('screens')
+          .update(patch)
+          .eq('analysis_id', ANALYSIS_ID)
+          .eq('id', id)
+      ).error,
+    );
+  }
+}
+
+/**
  * Publish a Run's results to the Lumen Supabase. Write order matters:
  * evidence -> children (tests/issues/investigations) -> analyses summary LAST,
  * so `analyses.analyzed_at` acts as the atomic "run fully published" marker and
@@ -662,6 +728,10 @@ export async function publishRun(
   // before counting, so SPA soft-404s the explorer caught by content show up
   // as warnings on the map instead of lingering as red/failed screens.
   await reconcileExpectedMissingScreens(supabase, artifact);
+
+  // Back-fill each streamed screen's test_case_ids/issue_ids from the journey
+  // graph so the map's "Generated tests"/"Related issues" counts aren't always 0.
+  await reconcileScreenLinks(supabase, journeys, issues);
 
   // Screens are streamed live by the reporter; count them for the summary
   // (publish otherwise only reconciles missing-page warnings above).
