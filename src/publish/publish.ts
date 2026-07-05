@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ConsoleEntry, Finding, FlowSnapshot, NetworkEntry, RunArtifact, StepResult } from '../report/types.js';
+import { screenId, screenTitle } from '../stream/screen-id.js';
 import { uploadEvidence } from './evidence.js';
 import { ANALYSIS_ID, getSupabase } from './supabase-client.js';
 
@@ -557,6 +558,76 @@ async function replaceRows(
 }
 
 /**
+ * The path inside an "Expected page "X" but it was not present" advisory
+ * title, or undefined for any other finding. We control this template in the
+ * explorer prompts, so matching it is reliable.
+ */
+function expectedMissingPath(finding: Finding): string | undefined {
+  if (finding.kind !== 'advisory') return undefined;
+  const match = /^Expected page "([^"]+)"/.exec(finding.title);
+  return match ? match[1] : undefined;
+}
+
+/**
+ * Reconcile the screens graph with the explorer's expected-but-missing
+ * findings. A page the AI expected but that isn't really there is NOT a real
+ * screen — but the user still wants it on the map, as an amber 'warning' node
+ * with no elements ("the AI expected this page; it isn't here"). This is the
+ * only reliable signal for SPA soft-404s: a client-side route with no matching
+ * view renders "not found" without any HTTP response, so status-based dropping
+ * can't see it — the explorer catches it by content and files an advisory.
+ * Broken links (a real control that 404s) are hard-failures and stay red; only
+ * advisory "Expected page" findings become warning nodes here.
+ */
+async function reconcileExpectedMissingScreens(
+  supabase: SupabaseClient,
+  artifact: RunArtifact,
+): Promise<void> {
+  const ids = new Set<string>();
+  for (const finding of artifact.findings) {
+    const path = expectedMissingPath(finding);
+    if (!path) continue;
+    try {
+      ids.add(screenId(new URL(path, artifact.target).href));
+    } catch {
+      // A path we can't resolve to a URL isn't a screen — skip it.
+    }
+  }
+  for (const id of ids) {
+    // An expected-but-missing page carries no real UI: clear elements/nav and
+    // flag it amber. Update first so a node a flow already created is downgraded
+    // in place (keeping its position); insert only when nothing navigated there.
+    const patch = { status: 'warning', elements: [], navigation: [], expected_actions: [] };
+    const { data: updated, error: updateError } = await supabase
+      .from('screens')
+      .update(patch)
+      .eq('analysis_id', ANALYSIS_ID)
+      .eq('id', id)
+      .select('id');
+    throwOnError('warn missing screen', updateError);
+    if (updated && updated.length > 0) continue;
+    const { error: insertError } = await supabase.from('screens').insert({
+      analysis_id: ANALYSIS_ID,
+      id,
+      name: screenTitle(id),
+      type: 'core',
+      description: 'Expected by exploration but not present',
+      position: { x: 0, y: 0 },
+      status: 'warning',
+      is_entry_point: false,
+      accent: '#f59e0b',
+      elements: [],
+      navigation: [],
+      expected_actions: [],
+      test_case_ids: [],
+      issue_ids: [],
+      last_run_id: artifact.runId,
+    });
+    throwOnError('insert missing screen', insertError);
+  }
+}
+
+/**
  * Publish a Run's results to the Lumen Supabase. Write order matters:
  * evidence -> children (tests/issues/investigations) -> analyses summary LAST,
  * so `analyses.analyzed_at` acts as the atomic "run fully published" marker and
@@ -587,8 +658,13 @@ export async function publishRun(
   await replaceRows(supabase, 'investigations', 'test_id', asRows(investigations));
   await replaceRows(supabase, 'insights', 'id', asRows(buildInsights(artifact)));
 
+  // Turn expected-but-missing pages into amber warning nodes (0 elements)
+  // before counting, so SPA soft-404s the explorer caught by content show up
+  // as warnings on the map instead of lingering as red/failed screens.
+  await reconcileExpectedMissingScreens(supabase, artifact);
+
   // Screens are streamed live by the reporter; count them for the summary
-  // (publish itself never writes the screens table).
+  // (publish otherwise only reconciles missing-page warnings above).
   const { count: screenCount, error: screenCountError } = await supabase
     .from('screens')
     .select('id', { count: 'exact', head: true })

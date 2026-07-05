@@ -2,7 +2,7 @@ import type { ConsoleEntry, NetworkEntry, StepResult } from '../report/types.js'
 import type { RunEvent } from './events.js';
 
 export type RunKind = 'full' | 'single-test';
-export type ScreenStatus = 'running' | 'passed' | 'failed' | 'discovered';
+export type ScreenStatus = 'running' | 'passed' | 'failed' | 'discovered' | 'warning';
 export type TestRunStatus = 'running' | 'passed' | 'failed' | 'healed' | 'discovered';
 
 export interface RunSummary {
