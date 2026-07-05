@@ -226,19 +226,19 @@ export async function admitProposedFlows(
  * Prompt fragments shared by the smoke and persona (deep) explorers, so the
  * browser protocol, safety fences, and output contract never drift apart.
  */
-export function browserProtocol(session: string, target: URL, videoPath: string): string {
+export function browserProtocol(session: string, target: URL, _videoPath?: string): string {
   return `## Your browser
 Drive the browser with the agent-browser CLI via shell. EVERY command MUST include \`--session ${session}\` (other agents share the daemon; the flag isolates your browser).
 
 SPEED MATTERS: every shell call costs you a turn. BATCH commands whenever possible.
 
 Protocol — first shell call (one batch):
-  agent-browser --session ${session} batch "open ${target.href}" "record start ${videoPath}" "snapshot -i -c"
+  agent-browser --session ${session} batch "open ${target.href}" "snapshot -i -c"
 Work loop (batch an action with the checks that follow it):
   agent-browser --session ${session} batch "click @e12" "get url" "snapshot -i -c" "console" "errors"
   agent-browser --session ${session} batch "fill @e5 test@example.com" "click @e7" "snapshot -i -c"
 Protocol — last shell call (NEVER skip, even when out of time):
-  agent-browser --session ${session} batch "record stop" "close"`;
+  agent-browser --session ${session} batch "close"`;
 }
 
 export function hardRules(origin: string): string {

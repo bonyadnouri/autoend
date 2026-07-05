@@ -60,6 +60,7 @@ async function processRun(request: RunRequest, repoRoot: string, queue: RunQueue
         runId: request.runId,
         kind: 'full',
         reporter,
+        model: process.env.AUTOEND_MODEL ?? config?.model,
       });
       await publishRun(artifact, join(artifactDir, 'evidence'));
     }
